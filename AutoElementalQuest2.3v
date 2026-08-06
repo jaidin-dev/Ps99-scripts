@@ -52,7 +52,7 @@ local CHEST_LOAD_TIMEOUT = 8
 local CHEST_BREAK_TIMEOUT = 30
 local CHEST_MIN_DWELL_TIME = 2.5
 local CHEST_GONE_CONFIRM_TIME = 0.8
-local HUGE_SPAWN_WAIT = 6
+local HUGE_SPAWN_WAIT = 10
 local SERVER_HISTORY_LIMIT = 20
 local SERVER_SCAN_PAGE_LIMIT = 5
 local WEBHOOK_RETRY_COUNT = 3
@@ -506,7 +506,7 @@ sendWebhook = function(title, description, color, fields)
         description = description,
         color = color or WEBHOOK_COLORS.GREEN,
         fields = fields or {},
-        footer = { text = "Quest Runner " .. VERSION .. " • " .. os.date("%X") },
+        footer = { text = "Quest Runner " .. VERSION .. " â€¢ " .. os.date("%X") },
         timestamp = DateTime.now():ToIsoDate(),
     }
     local payload = HttpService:JSONEncode({ embeds = { embed } })
@@ -756,6 +756,40 @@ local function findRarePetOnly()
         end
     end
 
+    -- Fallback: check workspace for physical models that look like a huge pet
+    local fallbackIndex, fallbackName, fallbackRare, fallbackType
+    pcall(function()
+        local things = workspace:FindFirstChild("__THINGS")
+        local roamingFolder = things and things:FindFirstChild("RoamingPets")
+        if roamingFolder then
+            for _, model in ipairs(roamingFolder:GetChildren()) do
+                if model:IsA("Model") then
+                    local index = model.Name
+                    -- Check descendants for 'Huge'
+                    for _, desc in ipairs(model:GetDescendants()) do
+                        if desc:IsA("StringValue") and string.find(string.lower(tostring(desc.Value)), "huge", 1, true) then
+                            fallbackIndex, fallbackName, fallbackRare, fallbackType = index, tostring(desc.Value), true, "HUGE"
+                            return
+                        elseif desc:IsA("Model") and string.find(string.lower(tostring(desc.Name)), "huge", 1, true) then
+                            fallbackIndex, fallbackName, fallbackRare, fallbackType = index, tostring(desc.Name), true, "HUGE"
+                            return
+                        end
+                    end
+                    -- Check model size (Huges have large bounding boxes)
+                    local ok, size = pcall(function() return model:GetExtentsSize() end)
+                    if ok and size and (size.Y > 8 or size.X > 8 or size.Z > 8) then
+                        fallbackIndex, fallbackName, fallbackRare, fallbackType = index, "Unknown Huge (Size)", true, "HUGE"
+                        return
+                    end
+                end
+            end
+        end
+    end)
+    
+    if fallbackRare then
+        return fallbackIndex, fallbackName, fallbackRare, fallbackType
+    end
+
     return nil, nil, false, nil
 end
 
@@ -960,7 +994,7 @@ local function visitShopAndBuy(returnCFrame)
             if setStage then
                 setStage(
                     "SHOP",
-                    string.format("Verified %d purchase(s) • %.1fs remaining", verifiedTotal, remaining)
+                    string.format("Verified %d purchase(s) â€¢ %.1fs remaining", verifiedTotal, remaining)
                 )
             end
             task.wait(math.min(0.55, math.max(0.05, remaining)))
@@ -2502,7 +2536,7 @@ local function waitForBossChest(timeoutSeconds)
 
         local remaining = math.max(0, deadline - os.clock())
         if setStage then
-            setStage("CHEST", string.format("Waiting for chest to load • %.1fs", remaining))
+            setStage("CHEST", string.format("Waiting for chest to load â€¢ %.1fs", remaining))
         else
             setStatus(string.format("Waiting for boss chest (%.1fs)", remaining))
         end
@@ -2954,7 +2988,7 @@ local function waitForHuge(seconds)
 
         local remaining = math.max(0, deadline - os.clock())
         if setStage then
-            setStage("HUGE CHECK", string.format("Watching chest loot • %.1fs", remaining))
+            setStage("HUGE CHECK", string.format("Watching chest loot â€¢ %.1fs", remaining))
         else
             setStatus(string.format("Waiting for huge spawn (%.1fs)", remaining))
         end
