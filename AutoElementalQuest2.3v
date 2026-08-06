@@ -33,10 +33,10 @@ if not Save or not ClientNetwork or not Directory then
     return
 end
 
-local VERSION = "v2.7.2"
+local VERSION = "v2.7.3"
 local QUEST_ID = "ElementalQuests"
 local CONFIG_FILE = "ElementalQuestRunner_Config.json"
-local SCRIPT_URL = "https://raw.githubusercontent.com/jaidin-dev/elemental-auto-quest/refs/heads/main/elemental_quest_runner.luau"
+local SCRIPT_URL = "https://raw.githubusercontent.com/jaidin-dev/Ps99-scripts/refs/heads/main/AutoElementalQuest2.3v"
 local ELEMENTAL_REALM_CFRAME = CFrame.new(1427.29, 17.5, -24949.01)
 local FARM_ZONE_CFRAME = CFrame.new(1427.29, 17.5, -24949.01)
 local SHOP_CFRAME = CFrame.new(783.183655, 19.5289688, -24890.543, -0.999179542, 2.65699146e-05, -0.0404994301, 5.14089379e-06, 0.999999881, 0.000529223063, 0.0404994413, 0.000528580684, -0.999179423)
@@ -72,6 +72,7 @@ local STATS = {
     CubesBought = 0,
     PurchaseRetries = 0,
     WebhookFailures = 0,
+    HugeCatchAttempts = 0,
 }
 
 local CONFIG = {
@@ -505,7 +506,7 @@ sendWebhook = function(title, description, color, fields)
         description = description,
         color = color or WEBHOOK_COLORS.GREEN,
         fields = fields or {},
-        footer = { text = "Quest Runner " .. VERSION .. " â€¢ " .. os.date("%X") },
+        footer = { text = "Quest Runner " .. VERSION .. " • " .. os.date("%X") },
         timestamp = DateTime.now():ToIsoDate(),
     }
     local payload = HttpService:JSONEncode({ embeds = { embed } })
@@ -959,7 +960,7 @@ local function visitShopAndBuy(returnCFrame)
             if setStage then
                 setStage(
                     "SHOP",
-                    string.format("Verified %d purchase(s) â€¢ %.1fs remaining", verifiedTotal, remaining)
+                    string.format("Verified %d purchase(s) • %.1fs remaining", verifiedTotal, remaining)
                 )
             end
             task.wait(math.min(0.55, math.max(0.05, remaining)))
@@ -2501,7 +2502,7 @@ local function waitForBossChest(timeoutSeconds)
 
         local remaining = math.max(0, deadline - os.clock())
         if setStage then
-            setStage("CHEST", string.format("Waiting for chest to load â€¢ %.1fs", remaining))
+            setStage("CHEST", string.format("Waiting for chest to load • %.1fs", remaining))
         else
             setStatus(string.format("Waiting for boss chest (%.1fs)", remaining))
         end
@@ -2773,6 +2774,115 @@ local function alertHugeSpawn(index, petId, rareType)
     return false
 end
 
+GUI_REF.sendHugeEventWebhook = function(title, description, color, fields)
+    local success, status = sendWebhook(title, description, color, fields)
+
+    if success then
+        addLog(title .. " webhook delivered")
+        return true
+    end
+
+    addLog(title .. " webhook failed: " .. tostring(status) .. "; retrying")
+    task.spawn(function()
+        local retrySuccess, retryStatus = sendWebhookReliable(
+            title,
+            description,
+            color,
+            fields
+        )
+
+        if retrySuccess then
+            addLog(title .. " webhook delivered by retry")
+        else
+            addLog(title .. " webhook failed after retries: " .. tostring(retryStatus))
+        end
+    end)
+
+    return false
+end
+
+GUI_REF.notifyHugeCatchAttempt = function(index, petId, cubeName, attemptKind)
+    STATS.HugeCatchAttempts = (STATS.HugeCatchAttempts or 0) + 1
+    local attemptNumber = STATS.HugeCatchAttempts
+
+    GUI_REF.sendHugeEventWebhook(
+        "HUGE CATCH ATTEMPT #" .. tostring(attemptNumber),
+        "The runner is attempting to catch **" .. tostring(petId) .. "**.",
+        WEBHOOK_COLORS.ORANGE,
+        {
+            { name = "Pet", value = tostring(petId), inline = true },
+            { name = "Cube", value = tostring(cubeName), inline = true },
+            { name = "Attempt", value = tostring(attemptNumber), inline = true },
+            { name = "Attempt Type", value = tostring(attemptKind or "Primary"), inline = true },
+            { name = "Roaming Index", value = tostring(index), inline = true },
+            { name = "Player", value = player.Name, inline = true },
+            { name = "Server", value = string.sub(game.JobId, 1, 12), inline = true },
+            { name = "Mode", value = tostring(CONFIG.MODE), inline = true },
+        }
+    )
+
+    return attemptNumber
+end
+
+GUI_REF.notifyHugeCatchRequestResult = function(attemptNumber, index, petId, cubeName, invokeOk, accepted)
+    local requestAccepted = invokeOk and accepted ~= false and accepted ~= nil
+    local title = requestAccepted and "HUGE CATCH REQUEST ACCEPTED" or "HUGE CATCH REQUEST FAILED"
+    local description
+
+    if requestAccepted then
+        description = "The catch remote accepted attempt **#" .. tostring(attemptNumber) .. "** for **" .. tostring(petId) .. "**. Inventory verification is still pending."
+    elseif invokeOk then
+        description = "The catch remote rejected attempt **#" .. tostring(attemptNumber) .. "** for **" .. tostring(petId) .. "**."
+    else
+        description = "The catch remote errored during attempt **#" .. tostring(attemptNumber) .. "** for **" .. tostring(petId) .. "**."
+    end
+
+    GUI_REF.sendHugeEventWebhook(
+        title,
+        description,
+        requestAccepted and WEBHOOK_COLORS.BLUE or WEBHOOK_COLORS.RED,
+        {
+            { name = "Pet", value = tostring(petId), inline = true },
+            { name = "Cube", value = tostring(cubeName), inline = true },
+            { name = "Attempt", value = tostring(attemptNumber), inline = true },
+            { name = "Roaming Index", value = tostring(index), inline = true },
+            { name = "Invoke OK", value = tostring(invokeOk), inline = true },
+            { name = "Remote Return", value = tostring(accepted), inline = false },
+            { name = "Server", value = string.sub(game.JobId, 1, 12), inline = true },
+        }
+    )
+end
+
+GUI_REF.notifyHugeCatchVerification = function(attemptNumber, index, petId, cubeName, result)
+    local title
+    local description
+    local color
+
+    if result == "ESCAPED" then
+        title = "HUGE CATCH FAILED"
+        description = "The Huge left the roaming list but no new matching Huge was confirmed in inventory."
+        color = WEBHOOK_COLORS.RED
+    else
+        title = "HUGE CATCH UNCONFIRMED"
+        description = "The catch request completed, but the runner could not confirm the Huge in inventory yet."
+        color = WEBHOOK_COLORS.ORANGE
+    end
+
+    GUI_REF.sendHugeEventWebhook(
+        title,
+        description,
+        color,
+        {
+            { name = "Pet", value = tostring(petId), inline = true },
+            { name = "Cube", value = tostring(cubeName), inline = true },
+            { name = "Attempt", value = tostring(attemptNumber or "Unknown"), inline = true },
+            { name = "Result", value = tostring(result), inline = true },
+            { name = "Roaming Index", value = tostring(index), inline = true },
+            { name = "Server", value = string.sub(game.JobId, 1, 12), inline = true },
+        }
+    )
+end
+
 local function snapshotPetUUIDs()
     local known = {}
     local data = Save and Save.Get()
@@ -2844,7 +2954,7 @@ local function waitForHuge(seconds)
 
         local remaining = math.max(0, deadline - os.clock())
         if setStage then
-            setStage("HUGE CHECK", string.format("Watching chest loot â€¢ %.1fs", remaining))
+            setStage("HUGE CHECK", string.format("Watching chest loot • %.1fs", remaining))
         else
             setStatus(string.format("Waiting for huge spawn (%.1fs)", remaining))
         end
@@ -3040,9 +3150,31 @@ task.spawn(function()
         end
 
         local beforePetUUIDs = snapshotPetUUIDs()
+        local hugeAttemptNumber = nil
+
+        if isRareTarget then
+            hugeAttemptNumber = GUI_REF.notifyHugeCatchAttempt(
+                index,
+                petId,
+                targetCubeName,
+                "Primary"
+            )
+        end
+
         local ok, accepted = pcall(function()
             return ClientNetwork.Invoke("RoamingPets_CatchPet", targetCubeName, index)
         end)
+
+        if isRareTarget then
+            GUI_REF.notifyHugeCatchRequestResult(
+                hugeAttemptNumber,
+                index,
+                petId,
+                targetCubeName,
+                ok,
+                accepted
+            )
+        end
 
         if isRareTarget
             and targetCubeName == "Ultra Pet Cube"
@@ -3052,9 +3184,23 @@ task.spawn(function()
             addLog("Ultra catch unavailable; falling back to a normal Pet Cube")
             targetCubeName = "Pet Cube"
             cubeCount = getCubeCount(false)
+            hugeAttemptNumber = GUI_REF.notifyHugeCatchAttempt(
+                index,
+                petId,
+                targetCubeName,
+                "Normal Cube Fallback"
+            )
             ok, accepted = pcall(function()
                 return ClientNetwork.Invoke("RoamingPets_CatchPet", targetCubeName, index)
             end)
+            GUI_REF.notifyHugeCatchRequestResult(
+                hugeAttemptNumber,
+                index,
+                petId,
+                targetCubeName,
+                ok,
+                accepted
+            )
         end
 
         if ok and accepted then
@@ -3102,9 +3248,27 @@ task.spawn(function()
                 STATS.PetsEscaped = STATS.PetsEscaped + 1
                 setStatus(tostring(petId) .. " left the roaming list without entering inventory")
                 addLog("Catch not confirmed; target disappeared: " .. tostring(petId))
+                if isRareTarget then
+                    GUI_REF.notifyHugeCatchVerification(
+                        hugeAttemptNumber,
+                        index,
+                        petId,
+                        targetCubeName,
+                        result
+                    )
+                end
             else
                 setStatus("Catch result unconfirmed - retrying if the pet remains")
                 addLog("Catch result unconfirmed for " .. tostring(petId))
+                if isRareTarget then
+                    GUI_REF.notifyHugeCatchVerification(
+                        hugeAttemptNumber,
+                        index,
+                        petId,
+                        targetCubeName,
+                        result
+                    )
+                end
             end
         else
             setStatus("Catch request failed - retrying...")
