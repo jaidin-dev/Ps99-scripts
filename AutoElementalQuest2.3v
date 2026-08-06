@@ -793,17 +793,18 @@ local function findRarePetOnly()
     return nil, nil, false, nil
 end
 
-local function findHighestChancePet()
+local function findEasiestPet()
     local data = Save and Save.Get()
     local roaming = data and data.RoamingPets or {}
 
-    local bestIndex, bestPet, bestChance = nil, nil, -1
+    local bestIndex, bestPet, bestChance = nil, nil, math.huge
 
     for index, entry in pairs(roaming) do
         local petId = getRoamingPetId(entry)
         local chance = tonumber(entry.Chance) or 0
 
-        if chance > bestChance then
+        -- Lower chance value means it is easier/more common
+        if chance < bestChance then
             bestIndex, bestPet, bestChance = index, petId, chance
         end
     end
@@ -3082,7 +3083,7 @@ task.spawn(function()
             end
 
             if not index then
-                local rerollIndex, rerollPetId = findHighestChancePet()
+                local rerollIndex, rerollPetId = findEasiestPet()
 
                 if rerollIndex then
                     index = rerollIndex
