@@ -33,10 +33,10 @@ if not Save or not ClientNetwork or not Directory then
     return
 end
 
-local VERSION = "v2.7.1"
+local VERSION = "v2.7.2"
 local QUEST_ID = "ElementalQuests"
 local CONFIG_FILE = "ElementalQuestRunner_Config.json"
-local SCRIPT_URL = "https://raw.githubusercontent.com/jaidin-dev/Ps99-scripts/refs/heads/main/AutoElementalQuest2.3v"
+local SCRIPT_URL = "https://raw.githubusercontent.com/jaidin-dev/elemental-auto-quest/refs/heads/main/elemental_quest_runner.luau"
 local ELEMENTAL_REALM_CFRAME = CFrame.new(1427.29, 17.5, -24949.01)
 local FARM_ZONE_CFRAME = CFrame.new(1427.29, 17.5, -24949.01)
 local SHOP_CFRAME = CFrame.new(783.183655, 19.5289688, -24890.543, -0.999179542, 2.65699146e-05, -0.0404994301, 5.14089379e-06, 0.999999881, 0.000529223063, 0.0404994413, 0.000528580684, -0.999179423)
@@ -52,7 +52,7 @@ local CHEST_LOAD_TIMEOUT = 8
 local CHEST_BREAK_TIMEOUT = 30
 local CHEST_MIN_DWELL_TIME = 2.5
 local CHEST_GONE_CONFIRM_TIME = 0.8
-local HUGE_SPAWN_WAIT = 3
+local HUGE_SPAWN_WAIT = 6
 local SERVER_HISTORY_LIMIT = 20
 local SERVER_SCAN_PAGE_LIMIT = 5
 local WEBHOOK_RETRY_COUNT = 3
@@ -505,7 +505,7 @@ sendWebhook = function(title, description, color, fields)
         description = description,
         color = color or WEBHOOK_COLORS.GREEN,
         fields = fields or {},
-        footer = { text = "Quest Runner " .. VERSION .. " • " .. os.date("%X") },
+        footer = { text = "Quest Runner " .. VERSION .. " â€¢ " .. os.date("%X") },
         timestamp = DateTime.now():ToIsoDate(),
     }
     local payload = HttpService:JSONEncode({ embeds = { embed } })
@@ -959,7 +959,7 @@ local function visitShopAndBuy(returnCFrame)
             if setStage then
                 setStage(
                     "SHOP",
-                    string.format("Verified %d purchase(s) • %.1fs remaining", verifiedTotal, remaining)
+                    string.format("Verified %d purchase(s) â€¢ %.1fs remaining", verifiedTotal, remaining)
                 )
             end
             task.wait(math.min(0.55, math.max(0.05, remaining)))
@@ -2501,7 +2501,7 @@ local function waitForBossChest(timeoutSeconds)
 
         local remaining = math.max(0, deadline - os.clock())
         if setStage then
-            setStage("CHEST", string.format("Waiting for chest to load • %.1fs", remaining))
+            setStage("CHEST", string.format("Waiting for chest to load â€¢ %.1fs", remaining))
         else
             setStatus(string.format("Waiting for boss chest (%.1fs)", remaining))
         end
@@ -2844,7 +2844,7 @@ local function waitForHuge(seconds)
 
         local remaining = math.max(0, deadline - os.clock())
         if setStage then
-            setStage("HUGE CHECK", string.format("Watching chest loot • %.1fs", remaining))
+            setStage("HUGE CHECK", string.format("Watching chest loot â€¢ %.1fs", remaining))
         else
             setStatus(string.format("Waiting for huge spawn (%.1fs)", remaining))
         end
@@ -3000,6 +3000,43 @@ task.spawn(function()
             setStatus("Rerolling " .. tostring(petId) .. " for new spawns...")
         else
             setStatus("Throwing " .. targetCubeName .. " at " .. tostring(petId) .. " (" .. cubeCount .. " left)")
+        end
+
+        -- Rare pets can reject the catch request when the player is too far away.
+        -- Move directly to the matching roaming-pet model before throwing a cube.
+        if isRareTarget then
+            local movedToTarget = false
+
+            local moveOk, moveErr = pcall(function()
+                local things = workspace:FindFirstChild("__THINGS")
+                local roamingFolder = things and things:FindFirstChild("RoamingPets")
+
+                if not roamingFolder then
+                    return
+                end
+
+                for _, model in ipairs(roamingFolder:GetChildren()) do
+                    if model.Name == tostring(index) and model:IsA("Model") then
+                        local character = player.Character
+                        local root = character and character:FindFirstChild("HumanoidRootPart")
+
+                        if root then
+                            root.CFrame = model:GetPivot()
+                            movedToTarget = true
+                            addLog("Moved to huge pet model before catch: " .. tostring(index))
+                            task.wait(0.25)
+                        end
+
+                        break
+                    end
+                end
+            end)
+
+            if not moveOk then
+                addLog("Huge proximity move failed: " .. tostring(moveErr))
+            elseif not movedToTarget then
+                addLog("Could not find roaming-pet model for index " .. tostring(index))
+            end
         end
 
         local beforePetUUIDs = snapshotPetUUIDs()
