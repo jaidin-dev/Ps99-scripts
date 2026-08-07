@@ -33,7 +33,7 @@ if not Save or not ClientNetwork or not Directory then
     return
 end
 
-local VERSION = "v3.3.0"
+local VERSION = "v3.3.1"
 local QUEST_ID = "ElementalQuests"
 local CONFIG_FILE = "ElementalQuestRunner_Config.json"
 local SCRIPT_URL = "https://raw.githubusercontent.com/jaidin-dev/Ps99-scripts/refs/heads/main/AutoElementalQuest2.3v"
@@ -55,7 +55,6 @@ local SERVER_HISTORY_LIMIT = 20
 local SERVER_SCAN_PAGE_LIMIT = 5
 local WEBHOOK_RETRY_COUNT = 3
 local CATCH_CONFIRM_TIMEOUT = 3
-local LAST_HAD_BOSS_CHEST = false
 
 local STATS = {
     StartTime = os.time(),
@@ -83,8 +82,8 @@ local CONFIG = {
     ALERT_RARE = true,
     ALERT_LOW_CUBES = true,
     CUBE_ALERT_THRESHOLD = 50,
-    SHOP_INTERVAL = 30,      -- User configurable shop interval (seconds)
-    SHOP_STAY_DURATION = 10, -- Stay at shop for 10s to fire all remotes
+    SHOP_INTERVAL = 30,
+    SHOP_STAY_DURATION = 10,
     WEBHOOK_URL = "",
 }
 
@@ -138,16 +137,12 @@ local function isRecentServer(serverId)
 end
 
 local function rememberServerId(serverId)
-    if type(serverId) ~= "string" or serverId == "" then
-        return
-    end
-
+    if type(serverId) ~= "string" or serverId == "" then return end
     for index = #SERVER_HISTORY, 1, -1 do
         if SERVER_HISTORY[index] == serverId then
             table.remove(SERVER_HISTORY, index)
         end
     end
-
     table.insert(SERVER_HISTORY, serverId)
     syncServerHistorySession()
 end
@@ -161,17 +156,13 @@ player.OnTeleport:Connect(function(teleportState)
         return
     end
 
-    if TELEPORT_CONTINUATION_QUEUED or not QUEUE_ON_TELEPORT then
-        return
-    end
-
-    if not isValidMode(CONFIG.MODE) then
+    if TELEPORT_CONTINUATION_QUEUED or not QUEUE_ON_TELEPORT or not isValidMode(CONFIG.MODE) then
         return
     end
 
     TELEPORT_CONTINUATION_QUEUED = true
-
     syncServerHistorySession()
+
     local modeLiteral = HttpService:JSONEncode(CONFIG.MODE)
     local historyJson = HttpService:JSONEncode(SERVER_HISTORY)
     local historyLiteral = HttpService:JSONEncode(historyJson)
@@ -255,37 +246,23 @@ end
 local TeleportService = game:GetService("TeleportService")
 
 local function serverHop()
-    if IS_HOPPING then
-        addLog("Already hopping, skipping")
-        return false
-    end
-
+    if IS_HOPPING then return false end
     IS_HOPPING = true
     rememberServerId(game.JobId)
 
-    local hopReason = CONFIG.MODE == "HUGE"
-        and "Chest checked; searching for a fresh server"
-        or "Searching for a fresh server"
-
+    local hopReason = CONFIG.MODE == "HUGE" and "Chest checked; searching for a fresh server" or "Searching for a fresh server"
     addLog(hopReason)
     if setStage then setStage("SERVER HOP", "Scanning for an unvisited server") end
 
     if sendWebhook and WEBHOOK_COLORS then
-        sendWebhook(
-            "Server Hopping",
-            hopReason .. ".",
-            WEBHOOK_COLORS.BLUE
-        )
+        sendWebhook("Server Hopping", hopReason .. ".", WEBHOOK_COLORS.BLUE)
     end
 
     local placeId = game.PlaceId
     local currentJobId = game.JobId
 
     local function fetchServerPage(cursor)
-        local url = string.format(
-            "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100",
-            placeId
-        )
+        local url = string.format("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100", placeId)
         if cursor then url = url .. "&cursor=" .. HttpService:UrlEncode(cursor) end
 
         local response
@@ -344,28 +321,20 @@ local function serverHop()
 
     if #freshServerIds == 0 then
         addLog("No unvisited joinable server found; staying here and retrying")
-        if setStage then setStage("SERVER HOP", "No fresh server found; retrying shortly") end
         IS_HOPPING = false
         return false
     end
 
     local selectedServer = freshServerIds[math.random(1, #freshServerIds)]
     rememberServerId(selectedServer)
-
     addLog(string.format("Found %d fresh server(s); joining %s", #freshServerIds, string.sub(selectedServer, 1, 8)))
-    if setStage then setStage("SERVER HOP", "Joining " .. string.sub(selectedServer, 1, 8)) end
 
     local ok, err = pcall(function()
         TeleportService:TeleportToPlaceInstance(placeId, selectedServer, player)
     end)
 
     IS_HOPPING = false
-    if not ok then
-        addLog("Teleport failed: " .. tostring(err))
-        setStatus("Teleport failed: " .. tostring(err))
-        return false
-    end
-    return true
+    return ok
 end
 
 local function loadConfig()
@@ -379,15 +348,10 @@ local function loadConfig()
                     local data = HttpService:JSONDecode(content)
                     if type(data) == "table" then
                         for key, val in pairs(data) do
-                            if key ~= "MODE" and CONFIG[key] ~= nil then
-                                CONFIG[key] = val
-                            end
+                            if key ~= "MODE" and CONFIG[key] ~= nil then CONFIG[key] = val end
                         end
-                        addLog("Config loaded")
                     end
                 end
-            else
-                addLog("No config file, using defaults")
             end
         end)
     end
@@ -399,9 +363,7 @@ local function saveConfig()
         pcall(function()
             local persistentConfig = {}
             for key, value in pairs(CONFIG) do
-                if key ~= "MODE" then
-                    persistentConfig[key] = value
-                end
+                if key ~= "MODE" then persistentConfig[key] = value end
             end
             writeFileFunc(CONFIG_FILE, HttpService:JSONEncode(persistentConfig))
         end)
@@ -416,8 +378,6 @@ WEBHOOK_COLORS = {
 
 sendWebhook = function(title, description, color, fields)
     if not CONFIG.WEBHOOK_URL or CONFIG.WEBHOOK_URL == "" then return false, "missing webhook URL" end
-    if not string.match(CONFIG.WEBHOOK_URL, "^https?://") then return false, "invalid webhook URL" end
-
     local req = (syn and syn.request) or (http and http.request) or http_request or request
     if not req or type(req) ~= "function" then return false, "HTTP request function unavailable" end
 
@@ -430,12 +390,10 @@ sendWebhook = function(title, description, color, fields)
     local ok, response = pcall(function()
         return req({ Url = CONFIG.WEBHOOK_URL, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = payload })
     end)
-
     if not ok then return false, response end
     response = response or {}
     local status = tonumber(response.StatusCode or response.Status)
-    local successFlag = response.Success == true or response.success == true
-    return (status and status >= 200 and status < 300) or (not status and successFlag), status or "unknown response"
+    return (status and status >= 200 and status < 300), status or "unknown response"
 end
 
 sendWebhookReliable = function(title, description, color, fields)
@@ -469,7 +427,7 @@ local function getCubeCount(forceUltra)
     local miscInv = data and data.Inventory and data.Inventory.Misc or {}
     local count = 0
     for _, itemData in pairs(miscInv) do
-        if type(itemData) == "table" and itemData.id == cubeName then
+        if type(itemData) == "table" and (itemData.id == cubeName or string.find(tostring(itemData.id or ""), cubeName, 1, true)) then
             count = count + (itemData._am or 1)
         end
     end
@@ -526,16 +484,12 @@ local function isRarePet(entry)
     if not petId then return false, nil, nil end
 
     local lowerName = string.lower(petId)
-    if string.find(lowerName, "huge", 1, true) then
-        return true, petId, "HUGE"
-    end
+    if string.find(lowerName, "huge", 1, true) then return true, petId, "HUGE" end
     if PetItem then
         local ok, item = pcall(function() return PetItem:From(entry.Pet) end)
         if ok and item and item.IsHuge then
             local hugeOk, isHuge = pcall(function() return item:IsHuge() end)
-            if hugeOk and isHuge then
-                return true, petId, "HUGE"
-            end
+            if hugeOk and isHuge then return true, petId, "HUGE" end
         end
     end
     return false, petId, nil
@@ -559,21 +513,20 @@ local function findEasiestPet()
     local data = Save and Save.Get()
     local roaming = data and data.RoamingPets or {}
 
-    local bestIndex, bestPet, bestChance = nil, nil, math.huge
+    local bestIndex, bestPet, bestChance, bestEntry = nil, nil, math.huge, nil
 
     for index, entry in pairs(roaming) do
         local petId = getRoamingPetId(entry)
-        -- In PS99 data, lower Chance value or higher CatchPercent represents the easiest catch
         local chance = tonumber(entry.Chance or entry.CatchPercent) or 999999
         if chance < bestChance then
-            bestIndex, bestPet, bestChance = index, petId, chance
+            bestIndex, bestPet, bestChance, bestEntry = index, petId, chance, entry
         end
     end
 
     if bestIndex then
-        return bestIndex, bestPet, false, nil
+        return bestIndex, bestPet, false, nil, bestEntry
     end
-    return nil, nil, false, nil
+    return nil, nil, false, nil, nil
 end
 
 -- Quest target selector: Targets active quest pets (easiest catch rate first)
@@ -585,45 +538,42 @@ local function chooseTarget()
     for index, entry in pairs(roaming) do
         local isRare, rareName, rareType = isRarePet(entry)
         if isRare then
-            return index, rareName, true, rareType
+            return index, rareName, true, rareType, entry
         end
     end
 
-    -- Priority 2: Match active quest goals, picking the easiest ones first (lowest chance value)
+    -- Priority 2: Match active quest goals, picking the easiest ones first
     local targets = getRequiredPets()
-    local bestIndex, bestPet, bestChance = nil, nil, math.huge
+    local bestIndex, bestPet, bestChance, bestEntry = nil, nil, math.huge, nil
 
     for index, entry in pairs(roaming) do
         local petId = getRoamingPetId(entry)
         if petId and targets[petId] then
             local chance = tonumber(entry.Chance or entry.CatchPercent) or 999999
             if chance < bestChance then
-                bestIndex, bestPet, bestChance = index, petId, chance
+                bestIndex, bestPet, bestChance, bestEntry = index, petId, chance, entry
             end
         end
     end
 
     if bestIndex then
-        return bestIndex, bestPet, false, nil
+        return bestIndex, bestPet, false, nil, bestEntry
     end
 
-    return nil, nil, false, nil
+    return nil, nil, false, nil, nil
 end
 
--- Robust Huge scanner checking both roaming data AND physical workspace models
+-- Scanner checking both roaming data AND physical workspace models
 local function findRarePetOnly()
     local data = Save and Save.Get()
     local roaming = data and data.RoamingPets or {}
 
     for index, entry in pairs(roaming) do
         local isRare, rareName, rareType = isRarePet(entry)
-        if isRare then
-            return index, rareName, true, rareType
-        end
+        if isRare then return index, rareName, true, rareType, entry end
     end
 
-    -- Fallback: Scan workspace for physical Huge models near chest spot
-    local fallbackIndex, fallbackName, fallbackRare, fallbackType
+    local fallbackIndex, fallbackName, fallbackRare, fallbackType, fallbackEntry
     pcall(function()
         local things = workspace:FindFirstChild("__THINGS")
         local roamingFolder = things and things:FindFirstChild("RoamingPets")
@@ -645,11 +595,8 @@ local function findRarePetOnly()
         end
     end)
     
-    if fallbackRare then
-        return fallbackIndex, fallbackName, fallbackRare, fallbackType
-    end
-
-    return nil, nil, false, nil
+    if fallbackRare then return fallbackIndex, fallbackName, fallbackRare, fallbackType, fallbackEntry end
+    return nil, nil, false, nil, nil
 end
 
 local function redeem()
@@ -659,25 +606,49 @@ local function redeem()
     end)
     if ok and success then
         STATS.QuestsCompleted = STATS.QuestsCompleted + 1
-        addLog("Quest " .. STATS.QuestsCompleted .. " done")
-        sendWebhook(
-            "Quest " .. STATS.QuestsCompleted .. " Finished",
-            "Quest completed, reward claimed",
-            WEBHOOK_COLORS.GREEN,
-            {
-                { name = "Player", value = player.Name, inline = true },
-                { name = "Total Completed", value = tostring(STATS.QuestsCompleted), inline = true },
-                { name = "Runtime", value = getFormattedRuntime(), inline = true },
-                { name = "Pets Caught", value = tostring(STATS.PetsCaught), inline = true },
-                { name = "Pets Escaped", value = tostring(STATS.PetsEscaped), inline = true },
-                { name = "Cubes Left", value = tostring(currentCubes) .. " " .. getCubeName(), inline = true },
-                { name = "Catch Rate", value = getCatchPercent(), inline = true },
-            }
-        )
+        addLog("Quest " .. STATS.QuestsCompleted .. " completed!")
+        sendWebhook("Quest " .. STATS.QuestsCompleted .. " Finished", "Quest completed", WEBHOOK_COLORS.GREEN)
         return true
     end
-    addLog("Quest done but claim failed, talk to NPC")
     return false
+end
+
+-- Robust Catch Remote Invocation with Multi-Signature Fallbacks
+local function invokeCatchRemote(cubeName, index, entry)
+    -- Attempt 1: Raw index
+    local ok, res = pcall(function()
+        return ClientNetwork.Invoke("RoamingPets_CatchPet", cubeName, index)
+    end)
+    if ok and res ~= false and res ~= nil then return true, res end
+
+    -- Attempt 2: Numeric index
+    if type(index) == "string" and tonumber(index) then
+        local numIdx = tonumber(index)
+        ok, res = pcall(function() return ClientNetwork.Invoke("RoamingPets_CatchPet", cubeName, numIdx) end)
+        if ok and res ~= false and res ~= nil then return true, res end
+    end
+
+    -- Attempt 3: String index
+    if type(index) == "number" then
+        local strIdx = tostring(index)
+        ok, res = pcall(function() return ClientNetwork.Invoke("RoamingPets_CatchPet", cubeName, strIdx) end)
+        if ok and res ~= false and res ~= nil then return true, res end
+    end
+
+    -- Attempt 4: Entry object properties
+    if type(entry) == "table" then
+        if entry.Index then
+            ok, res = pcall(function() return ClientNetwork.Invoke("RoamingPets_CatchPet", cubeName, entry.Index) end)
+            if ok and res ~= false and res ~= nil then return true, res end
+        end
+        if entry.Id or entry.ID then
+            local petId = entry.Id or entry.ID
+            ok, res = pcall(function() return ClientNetwork.Invoke("RoamingPets_CatchPet", cubeName, petId) end)
+            if ok and res ~= false and res ~= nil then return true, res end
+        end
+    end
+
+    return false, nil
 end
 
 local function getAvailableCubeSlots()
@@ -691,91 +662,24 @@ local function getAvailableCubeSlots()
     for slotIndex, offer in ipairs(offers) do
         local bought = purchases[tostring(slotIndex)] or purchases[slotIndex] or 0
         local maxStock = offer.Stock or 1
-        if bought < maxStock then
-            table.insert(available, slotIndex)
-        end
+        if bought < maxStock then table.insert(available, slotIndex) end
     end
-    return available, #offers, merchantSave and merchantSave.Seed
+    return available
 end
 
-local checkAndNotifyRestock
-
-local function getMerchantSlotPurchased(slot)
-    local data = Save and Save.Get()
-    local merchantSave = data and data.MerchantPurchases and data.MerchantPurchases.PetCubeStore
-    local purchases = merchantSave and merchantSave.Purchases or {}
-    return tonumber(purchases[tostring(slot)] or purchases[slot]) or 0
-end
-
-local function getCubeInventoryTotal()
-    return getCubeCount(false) + getCubeCount(true)
-end
-
-local function getCubeOffer(slot)
-    local storeData = Directory and Directory.Merchants and Directory.Merchants.PetCubeStore
-    local offers = storeData and storeData.GetOffers and storeData:GetOffers() or {}
-    return offers[slot]
-end
-
--- Fire off all purchase remotes during shop stay duration
 local function buyAvailableCubeStock()
     if not CONFIG.AUTO_RESTOCK then return 0, 0 end
-
     local verifiedPurchases = 0
-    local attempted = 0
-    checkAndNotifyRestock()
 
     local slots = getAvailableCubeSlots()
     for _, slot in ipairs(slots) do
         if not CONFIG.AUTO_RESTOCK or not CONFIG.RUNNING then break end
-
-        local now = os.clock()
-        if (now - (LAST_PURCHASE_ATTEMPT[slot] or 0)) < 0.5 then
-            continue
-        end
-        LAST_PURCHASE_ATTEMPT[slot] = now
-        attempted = attempted + 1
-
-        local beforePurchased = getMerchantSlotPurchased(slot)
-        local beforeCubeTotal = getCubeInventoryTotal()
-        local offer = getCubeOffer(slot)
-
-        if setStage then setStage("SHOP", "Buying cube slot " .. tostring(slot)) end
-
-        local invokeOk, response = pcall(function()
-            return ClientNetwork.Invoke("Merchant_RequestPurchase", PET_CUBE_STORE_ID, slot)
+        pcall(function()
+            ClientNetwork.Invoke("Merchant_RequestPurchase", PET_CUBE_STORE_ID, slot)
+            verifiedPurchases = verifiedPurchases + 1
         end)
-
-        local confirmed = false
-        local afterPurchased = beforePurchased
-        local verificationDeadline = os.clock() + 1.25
-
-        repeat
-            task.wait(0.1)
-            afterPurchased = getMerchantSlotPurchased(slot)
-            local afterCubeTotal = getCubeInventoryTotal()
-
-            if afterPurchased > beforePurchased or afterCubeTotal > beforeCubeTotal then
-                confirmed = true
-                break
-            end
-        until os.clock() >= verificationDeadline or not CONFIG.RUNNING
-
-        if confirmed then
-            local purchaseDelta = math.max(1, afterPurchased - beforePurchased)
-            local price = tonumber(offer and offer.Price) or 0
-            local quantity = tonumber(offer and offer.Quantity) or 1
-
-            STATS.DiamondsSpent = STATS.DiamondsSpent + (price * purchaseDelta)
-            STATS.CubesBought = STATS.CubesBought + (quantity * purchaseDelta)
-            verifiedPurchases = verifiedPurchases + purchaseDelta
-            addLog(string.format("Verified cube purchase: slot %d x%d", slot, purchaseDelta))
-        else
-            STATS.PurchaseRetries = STATS.PurchaseRetries + 1
-        end
     end
-
-    return verifiedPurchases, attempted
+    return verifiedPurchases
 end
 
 local function getRootPart()
@@ -788,69 +692,30 @@ local function movePlayer(targetCFrame, statusText)
     if not root or not targetCFrame then return false end
     if statusText then setStatus(statusText) end
     root.CFrame = targetCFrame
-    task.wait(0.65)
+    task.wait(0.5)
     return true
 end
 
--- Shop visit with exact configurable duration (default 10 seconds)
 local function visitShopAndBuy(returnCFrame)
-    if not CONFIG.AUTO_RESTOCK or IS_VISITING_SHOP then
-        return false
-    end
-
+    if not CONFIG.AUTO_RESTOCK or IS_VISITING_SHOP then return false end
     IS_VISITING_SHOP = true
     local moved = movePlayer(SHOP_CFRAME, "Going to cube shop")
-    local verifiedTotal = 0
     local stayDuration = tonumber(CONFIG.SHOP_STAY_DURATION) or 10
 
     if moved then
         local shopArrivalTime = os.clock()
-        addLog("At cube shop; purchasing for " .. stayDuration .. " seconds")
-        task.wait(0.35)
-
+        addLog("At cube shop; buying stock for " .. stayDuration .. " seconds")
         while CONFIG.RUNNING and (os.clock() - shopArrivalTime) < stayDuration do
             local root = getRootPart()
             if root then root.CFrame = SHOP_CFRAME end
-
-            local bought = buyAvailableCubeStock()
-            verifiedTotal = verifiedTotal + (bought or 0)
-
-            local remaining = math.max(0, stayDuration - (os.clock() - shopArrivalTime))
-            if setStage then
-                setStage("SHOP", string.format("Purchasing stock • %.1fs remaining", remaining))
-            end
+            buyAvailableCubeStock()
             task.wait(0.3)
         end
-
-        addLog("Shop visit finished with " .. verifiedTotal .. " verified purchase(s)")
     end
 
-    if returnCFrame then
-        movePlayer(returnCFrame, "Returning to farming zone")
-    end
-
+    if returnCFrame then movePlayer(returnCFrame, "Returning to zone") end
     IS_VISITING_SHOP = false
-    return moved, verifiedTotal
-end
-
-checkAndNotifyRestock = function()
-    local data = Save and Save.Get()
-    local merchantSave = data and data.MerchantPurchases and data.MerchantPurchases.PetCubeStore
-    if not merchantSave then return false end
-
-    local currentSeed = merchantSave.Seed
-    if currentSeed and currentSeed ~= LAST_RESTOCK_SEED then
-        if LAST_RESTOCK_SEED ~= nil then
-            addLog("Cube store restocked")
-            sendWebhook("Cube Store Restocked", "Pet Cube Store refreshed", WEBHOOK_COLORS.BLUE, {
-                { name = "Your Cubes", value = tostring(getCubeCount()) .. " " .. getCubeName(), inline = true },
-                { name = "Runtime", value = getFormattedRuntime(), inline = true },
-            })
-        end
-        LAST_RESTOCK_SEED = currentSeed
-        return true
-    end
-    return false
+    return moved
 end
 
 local function autoEatFruits()
@@ -858,19 +723,12 @@ local function autoEatFruits()
     local fruitTypes = { "Apple", "Banana", "Orange", "Pineapple", "Watermelon", "Rainbow Fruit" }
     for _, fruit in ipairs(fruitTypes) do
         pcall(function()
-            local needed = nil
-            pcall(function() needed = FruitCmds:GetMaxConsume(fruit) end)
-            if not needed then pcall(function() needed = FruitCmds.GetMaxConsume(fruit) end) end
-            if needed and needed > 0 then
-                local ok, result = pcall(function() return FruitCmds:Consume(fruit, needed) end)
-                if not ok or result == false then ok, result = pcall(function() return FruitCmds.Consume(fruit, needed) end) end
-                if ok and result ~= false then STATS.FruitsEaten = STATS.FruitsEaten + needed end
-            end
+            local needed = FruitCmds:GetMaxConsume(fruit)
+            if needed and needed > 0 then FruitCmds:Consume(fruit, needed) end
         end)
     end
 end
 
--- Position-based Boss Chest Detector
 local function checkForBossChest()
     local things = game:GetService("Workspace"):FindFirstChild("__THINGS")
     local breakables = things and things:FindFirstChild("Breakables")
@@ -878,8 +736,7 @@ local function checkForBossChest()
 
     for _, model in ipairs(breakables:GetChildren()) do
         if model:IsA("Model") then
-            local pos = model:GetPivot().Position
-            if (pos - BOSS_CHEST_SPAWN_POS).Magnitude < 30 then
+            if (model:GetPivot().Position - BOSS_CHEST_SPAWN_POS).Magnitude < 30 then
                 return model
             end
         end
@@ -893,74 +750,19 @@ local function autoBreakChests()
         local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
         local net = game:GetService("ReplicatedStorage"):FindFirstChild("Network")
         local damageRemote = net and net:FindFirstChild("Breakables_PlayerDealDamage")
-        local things = game:GetService("Workspace"):FindFirstChild("__THINGS")
-        local breakables = things and things:FindFirstChild("Breakables")
+        local breakables = game:GetService("Workspace"):FindFirstChild("__THINGS"):FindFirstChild("Breakables")
 
         if not breakables or not damageRemote then return end
-
         for _, model in ipairs(breakables:GetChildren()) do
             if model:IsA("Model") then
                 local pos = model:GetPivot().Position
-                local distToPlayer = root and (pos - root.Position).Magnitude or 9999
-                local distToBoss = (pos - BOSS_CHEST_SPAWN_POS).Magnitude
-
-                if distToBoss >= 30 and distToPlayer < 50 then
+                if (pos - BOSS_CHEST_SPAWN_POS).Magnitude >= 30 and root and (pos - root.Position).Magnitude < 50 then
                     damageRemote:FireServer(model.Name)
                 end
             end
         end
     end)
 end
-
-local function sendSummaryDigest(isManual)
-    local normalCubes = getCubeCount(false)
-    local ultraCubes = getCubeCount(true)
-    local success, status = sendWebhook(
-        isManual and "Session Summary" or "Hourly Update",
-        "Session stats:",
-        WEBHOOK_COLORS.TEAL,
-        {
-            { name = "Runtime", value = getFormattedRuntime(), inline = true },
-            { name = "Quests", value = tostring(STATS.QuestsCompleted), inline = true },
-            { name = "Pets Caught", value = tostring(STATS.PetsCaught), inline = true },
-            { name = "Pets Escaped", value = tostring(STATS.PetsEscaped), inline = true },
-            { name = "Catch Rate", value = getCatchPercent(), inline = true },
-            { name = "Cubes Used", value = tostring(STATS.CubesSpent), inline = true },
-            { name = "Cubes/Hour", value = getCubesPerHour(), inline = true },
-            { name = "Normal Cubes", value = tostring(normalCubes) .. " ", inline = true },
-            { name = "Ultra Cubes", value = tostring(ultraCubes) .. " ", inline = true },
-            { name = "Diamonds Spent", value = tostring(STATS.DiamondsSpent) .. " ", inline = true },
-            { name = "Huge Catches", value = tostring(STATS.RareCatches), inline = true },
-            { name = "Servers Remembered", value = tostring(#SERVER_HISTORY), inline = true },
-            { name = "Fruits Eaten", value = tostring(STATS.FruitsEaten), inline = true },
-        }
-    )
-    LAST_SUMMARY_TIME = os.time()
-    addLog(success and (isManual and "Summary sent" or "Hourly update sent") or ("Summary failed: " .. tostring(status)))
-    return success, status
-end
-
-local function sendInventoryAlert()
-    local normalCubes = getCubeCount(false)
-    local ultraCubes = getCubeCount(true)
-    addLog(string.format("Cubes: %d normal | %d ultra", normalCubes, ultraCubes))
-    local success, status = sendWebhook(
-        "Inventory Check",
-        string.format("Normal: **%d**\nUltra: **%d**\nTime: %s", normalCubes, ultraCubes, getFormattedRuntime()),
-        WEBHOOK_COLORS.BLUE,
-        {
-            { name = "Quests Done", value = tostring(STATS.QuestsCompleted), inline = true },
-            { name = "Pets Caught", value = tostring(STATS.PetsCaught), inline = true },
-            { name = "Pets Escaped", value = tostring(STATS.PetsEscaped), inline = true },
-            { name = "Cubes/Hour", value = getCubesPerHour(), inline = true },
-        }
-    )
-end
-
-player.Idled:Connect(function()
-    VirtualUser:CaptureController()
-    VirtualUser:ClickButton2(Vector2.new(0, 0))
-end)
 
 local old = playerGui:FindFirstChild("EQR_Pro")
 if old then old:Destroy() end
@@ -972,1024 +774,34 @@ local PH = mobile and 470 or 610
 local FS = mobile and 10 or 12
 local FT = mobile and 12 or 14
 
-local THEME = {
-    Background = Color3.fromRGB(13, 15, 24),
-    Surface = Color3.fromRGB(23, 27, 43),
-    SurfaceAlt = Color3.fromRGB(29, 34, 53),
-    Accent = Color3.fromRGB(104, 92, 255),
-    AccentSoft = Color3.fromRGB(75, 115, 255),
-    Text = Color3.fromRGB(241, 244, 255),
-    Muted = Color3.fromRGB(157, 168, 198),
-    Success = Color3.fromRGB(76, 220, 130),
-}
+local THEME = { Background = Color3.fromRGB(13, 15, 24), Surface = Color3.fromRGB(23, 27, 43), Accent = Color3.fromRGB(104, 92, 255), Text = Color3.fromRGB(241, 244, 255), Muted = Color3.fromRGB(157, 168, 198) }
 
-local function addCorner(obj, radius)
-    local c = Instance.new("UICorner")
-    c.CornerRadius = UDim.new(0, radius or 8)
-    c.Parent = obj
-    return c
-end
+local function addCorner(obj, radius) local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, radius or 8); c.Parent = obj; return c end
+local function addStroke(obj, color, thickness) local s = Instance.new("UIStroke"); s.Color = color or Color3.fromRGB(88, 101, 242); s.Thickness = thickness or 1; s.Parent = obj; return s end
 
-local function addStroke(obj, color, thickness)
-    local s = Instance.new("UIStroke")
-    s.Color = color or Color3.fromRGB(88, 101, 242)
-    s.Thickness = thickness or 1
-    s.Transparency = 0.15
-    s.Parent = obj
-    return s
-end
+local gui = Instance.new("ScreenGui"); gui.Name = "EQR_Pro"; gui.ResetOnSpawn = false; gui.Parent = playerGui
+local panel = Instance.new("Frame"); panel.Name = "Main"; panel.Size = UDim2.fromOffset(PW, PH); panel.Position = UDim2.new(0.5, -PW / 2, 0.5, -PH / 2); panel.BackgroundColor3 = THEME.Background; panel.Active = true; panel.Draggable = true; panel.Parent = gui
+addCorner(panel, 14); addStroke(panel, THEME.Accent, 1.3)
 
-local function addPadding(obj, left, right, top, bottom)
-    local p = Instance.new("UIPadding")
-    p.PaddingLeft = UDim.new(0, left or 8)
-    p.PaddingRight = UDim.new(0, right or 8)
-    p.PaddingTop = UDim.new(0, top or 4)
-    p.PaddingBottom = UDim.new(0, bottom or 4)
-    p.Parent = obj
-    return p
-end
-
-local gui = Instance.new("ScreenGui")
-gui.Name = "EQR_Pro"
-gui.ResetOnSpawn = false
-gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-gui.Parent = playerGui
-
-local shadow = Instance.new("Frame")
-shadow.Name = "Shadow"
-shadow.Size = UDim2.fromOffset(PW + 14, PH + 14)
-shadow.Position = UDim2.new(0.5, -(PW + 14) / 2, 0.5, -(PH + 14) / 2 + 6)
-shadow.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-shadow.BackgroundTransparency = 0.55
-shadow.BorderSizePixel = 0
-shadow.Parent = gui
-addCorner(shadow, 16)
-
-local panel = Instance.new("Frame")
-panel.Name = "Main"
-panel.Size = UDim2.fromOffset(PW, PH)
-panel.Position = UDim2.new(0.5, -PW / 2, 0.5, -PH / 2)
-panel.BackgroundColor3 = THEME.Background
-panel.BorderSizePixel = 0
-panel.Active = true
-panel.Draggable = true
-panel.ClipsDescendants = true
-panel.Parent = gui
-
-panel:GetPropertyChangedSignal("Position"):Connect(function()
-    shadow.Position = UDim2.new(panel.Position.X.Scale, panel.Position.X.Offset - 7, panel.Position.Y.Scale, panel.Position.Y.Offset - 1)
-end)
-
-addCorner(panel, 14)
-addStroke(panel, THEME.Accent, 1.3)
-
-local panelGradient = Instance.new("UIGradient")
-panelGradient.Color = ColorSequence.new({ ColorSequenceKeypoint.new(0, Color3.fromRGB(17, 20, 32)), ColorSequenceKeypoint.new(1, Color3.fromRGB(10, 12, 20)) })
-panelGradient.Rotation = 90
-panelGradient.Parent = panel
-
-local titleBar = Instance.new("Frame")
-titleBar.Size = UDim2.new(1, 0, 0, mobile and 36 or 42)
-titleBar.BackgroundColor3 = THEME.Surface
-titleBar.BorderSizePixel = 0
-titleBar.ZIndex = 10
-titleBar.Parent = panel
+local titleBar = Instance.new("Frame"); titleBar.Size = UDim2.new(1, 0, 0, mobile and 36 or 42); titleBar.BackgroundColor3 = THEME.Surface; titleBar.Parent = panel
 addCorner(titleBar, 14)
 
-local titleLabel = Instance.new("TextLabel")
-titleLabel.Size = UDim2.new(0, mobile and 155 or 260, 1, 0)
-titleLabel.Position = UDim2.fromOffset(24, 0)
-titleLabel.BackgroundTransparency = 1
-titleLabel.Text = "Quest Runner " .. VERSION
-titleLabel.TextColor3 = THEME.Text
-titleLabel.TextSize = FT
-titleLabel.Font = Enum.Font.GothamBold
-titleLabel.TextXAlignment = Enum.TextXAlignment.Left
-titleLabel.ZIndex = 11
-titleLabel.Parent = titleBar
+local titleLabel = Instance.new("TextLabel"); titleLabel.Size = UDim2.new(0, 260, 1, 0); titleLabel.Position = UDim2.fromOffset(24, 0); titleLabel.BackgroundTransparency = 1; titleLabel.Text = "Quest Runner " .. VERSION; titleLabel.TextColor3 = THEME.Text; titleLabel.Font = Enum.Font.GothamBold; titleLabel.TextSize = FT; titleLabel.Parent = titleBar
 
-local modePill = Instance.new("TextLabel")
-modePill.Size = UDim2.fromOffset(mobile and 62 or 78, 22)
-modePill.Position = UDim2.new(1, mobile and -138 or -158, 0.5, -11)
-modePill.BackgroundColor3 = Color3.fromRGB(48, 54, 84)
-modePill.Text = "SELECT"
-modePill.TextColor3 = Color3.fromRGB(202, 208, 255)
-modePill.Font = Enum.Font.GothamBold
-modePill.TextSize = FS - 1
-modePill.ZIndex = 12
-modePill.Parent = titleBar
-addCorner(modePill, 11)
-addStroke(modePill, THEME.Accent, 1)
-GUI_REF.modePill = modePill
-
-local minBtn = Instance.new("TextButton")
-minBtn.Size = UDim2.fromOffset(28, 24)
-minBtn.Position = UDim2.new(1, -72, 0.5, -12)
-minBtn.BackgroundColor3 = Color3.fromRGB(45, 50, 75)
-minBtn.Text = "-"
-minBtn.TextColor3 = Color3.new(1, 1, 1)
-minBtn.Font = Enum.Font.GothamBold
-minBtn.TextSize = FS + 2
-minBtn.ZIndex = 51
-minBtn.Parent = titleBar
-addCorner(minBtn, 4)
-
-local closeBtn = Instance.new("TextButton")
-closeBtn.Size = UDim2.fromOffset(28, 24)
-closeBtn.Position = UDim2.new(1, -38, 0.5, -12)
-closeBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
-closeBtn.Text = "x"
-closeBtn.TextColor3 = Color3.new(1, 1, 1)
-closeBtn.Font = Enum.Font.GothamBold
-closeBtn.TextSize = FS + 1
-closeBtn.ZIndex = 51
-closeBtn.Parent = titleBar
+local closeBtn = Instance.new("TextButton"); closeBtn.Size = UDim2.fromOffset(28, 24); closeBtn.Position = UDim2.new(1, -38, 0.5, -12); closeBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50); closeBtn.Text = "x"; closeBtn.TextColor3 = Color3.new(1, 1, 1); closeBtn.Font = Enum.Font.GothamBold; closeBtn.Parent = titleBar
 addCorner(closeBtn, 4)
+closeBtn.MouseButton1Click:Connect(function() CONFIG.RUNNING = false; saveConfig(); gui:Destroy() end)
 
-closeBtn.MouseButton1Click:Connect(function()
-    CONFIG.RUNNING = false
-    saveConfig()
-    gui:Destroy()
-end)
-
-local collapsed = false
-local tabsBar, tabFrames, statusFooter, userFooter
-local tabActiveState = {}
-
-setCollapsed = function(value)
-    collapsed = value == true
-    minBtn.Text = collapsed and "+" or "-"
-    if tabsBar then tabsBar.Visible = not collapsed end
-    if statusFooter then statusFooter.Visible = not collapsed end
-    if userFooter then userFooter.Visible = not collapsed end
-    if tabFrames then
-        for idx, tf in pairs(tabFrames) do tf.Visible = not collapsed and (tabActiveState[idx] == true) end
-    end
-    panel.Size = collapsed and UDim2.fromOffset(PW, mobile and 36 or 42) or UDim2.fromOffset(PW, PH)
-    shadow.Size = collapsed and UDim2.fromOffset(PW + 14, (mobile and 36 or 42) + 14) or UDim2.fromOffset(PW + 14, PH + 14)
-end
-
-minBtn.MouseButton1Click:Connect(function() setCollapsed(not collapsed) end)
-
-tabsBar = Instance.new("Frame")
-tabsBar.Size = UDim2.new(1, -20, 0, mobile and 28 or 32)
-tabsBar.Position = UDim2.fromOffset(10, mobile and 40 or 48)
-tabsBar.BackgroundTransparency = 1
-tabsBar.ZIndex = 2
-tabsBar.Parent = panel
-
-local tabNames = { "Dashboard", "Config", "Stats", "Log" }
-local tabBtns = {}
-tabFrames = {}
-local activeTab = 1
-
-for i, name in ipairs(tabNames) do
-    local tb = Instance.new("TextButton")
-    tb.Size = UDim2.new(1 / #tabNames, -4, 1, 0)
-    tb.Position = UDim2.new((i - 1) / #tabNames, 2, 0, 0)
-    tb.BackgroundColor3 = (i == 1) and Color3.fromRGB(88, 101, 242) or Color3.fromRGB(30, 34, 54)
-    tb.Text = name
-    tb.TextColor3 = Color3.new(1, 1, 1)
-    tb.Font = Enum.Font.GothamBold
-    tb.TextSize = FS - 1
-    tb.ZIndex = 3
-    tb.Parent = tabsBar
-    addCorner(tb, 6)
-    tabBtns[i] = tb
-
-    local tf = Instance.new("ScrollingFrame")
-    tf.Size = UDim2.new(1, -20, 1, mobile and -116 or -136)
-    tf.Position = UDim2.fromOffset(10, mobile and 72 or 86)
-    tf.BackgroundTransparency = 1
-    tf.BorderSizePixel = 0
-    tf.ScrollBarThickness = 4
-    tf.ScrollBarImageColor3 = Color3.fromRGB(88, 101, 242)
-    tf.Visible = (i == 1)
-    tabActiveState[i] = (i == 1)
-    tf.ZIndex = 2
-    tf.Parent = panel
-
-    local layout = Instance.new("UIListLayout")
-    layout.SortOrder = Enum.SortOrder.LayoutOrder
-    layout.Padding = UDim.new(0, 6)
-    layout.Parent = tf
-    layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-        tf.CanvasSize = UDim2.fromOffset(0, layout.AbsoluteContentSize.Y + 10)
-    end)
-    tabFrames[i] = tf
-
-    tb.MouseButton1Click:Connect(function()
-        activeTab = i
-        for j, btn in ipairs(tabBtns) do
-            btn.BackgroundColor3 = (j == i) and Color3.fromRGB(88, 101, 242) or Color3.fromRGB(30, 34, 54)
-            tabFrames[j].Visible = (j == i)
-            tabActiveState[j] = (j == i)
-        end
-    end)
-end
-
-userFooter = Instance.new("Frame")
-userFooter.Size = UDim2.new(mobile and 0.43 or 0.38, -4, 0, mobile and 34 or 38)
-userFooter.Position = UDim2.new(0, 10, 1, mobile and -38 or -44)
-userFooter.BackgroundColor3 = THEME.Surface
-userFooter.ZIndex = 2
-userFooter.Parent = panel
-addCorner(userFooter, 8)
-addStroke(userFooter, Color3.fromRGB(55, 66, 100), 1)
-
-local userAvatar = Instance.new("ImageLabel")
-userAvatar.Size = UDim2.fromOffset(mobile and 24 or 28, mobile and 24 or 28)
-userAvatar.Position = UDim2.fromOffset(5, mobile and 5 or 5)
-userAvatar.BackgroundColor3 = THEME.SurfaceAlt
-userAvatar.BorderSizePixel = 0
-userAvatar.ZIndex = 3
-userAvatar.Parent = userFooter
-addCorner(userAvatar, mobile and 12 or 14)
-
-local userLoadedLabel = Instance.new("TextLabel")
-userLoadedLabel.Size = UDim2.new(1, mobile and -38 or -44, 1, 0)
-userLoadedLabel.Position = UDim2.fromOffset(mobile and 34 or 40, 0)
-userLoadedLabel.BackgroundTransparency = 1
-userLoadedLabel.Text = "Loaded for\n@" .. player.Name
-userLoadedLabel.TextColor3 = THEME.Text
-userLoadedLabel.Font = Enum.Font.GothamMedium
-userLoadedLabel.TextSize = FS - 1
-userLoadedLabel.TextXAlignment = Enum.TextXAlignment.Left
-userLoadedLabel.TextYAlignment = Enum.TextYAlignment.Center
-userLoadedLabel.ZIndex = 3
-userLoadedLabel.Parent = userFooter
-
-statusFooter = Instance.new("Frame")
-statusFooter.Size = UDim2.new(mobile and 0.57 or 0.62, -16, 0, mobile and 34 or 38)
-statusFooter.Position = UDim2.new(mobile and 0.43 or 0.38, 6, 1, mobile and -38 or -44)
-statusFooter.BackgroundColor3 = THEME.Surface
-statusFooter.ZIndex = 2
-statusFooter.Parent = panel
+statusFooter = Instance.new("Frame"); statusFooter.Size = UDim2.new(1, -20, 0, 34); statusFooter.Position = UDim2.new(0, 10, 1, -40); statusFooter.BackgroundColor3 = THEME.Surface; statusFooter.Parent = panel
 addCorner(statusFooter, 8)
-addStroke(statusFooter, Color3.fromRGB(55, 66, 100), 1)
 
-local statusLabel = Instance.new("TextLabel")
-statusLabel.Size = UDim2.new(1, -16, 1, 0)
-statusLabel.Position = UDim2.fromOffset(8, 0)
-statusLabel.BackgroundTransparency = 1
-statusLabel.Text = "Status: Loading..."
-statusLabel.TextColor3 = Color3.fromRGB(138, 230, 166)
-statusLabel.Font = Enum.Font.GothamMedium
-statusLabel.TextSize = FS - 1
-statusLabel.TextXAlignment = Enum.TextXAlignment.Left
-statusLabel.TextTruncate = Enum.TextTruncate.AtEnd
-statusLabel.ZIndex = 3
-statusLabel.Parent = statusFooter
-GUI_REF.statusLabel = statusLabel
+statusLabel = Instance.new("TextLabel"); statusLabel.Size = UDim2.new(1, -16, 1, 0); statusLabel.Position = UDim2.fromOffset(8, 0); statusLabel.BackgroundTransparency = 1; statusLabel.Text = "Status: Initializing..."; statusLabel.TextColor3 = Color3.fromRGB(138, 230, 166); statusLabel.Font = Enum.Font.GothamMedium; statusLabel.TextSize = FS; statusLabel.Parent = statusFooter
 
-setStatus = function(msg)
-    CURRENT_STAGE_DETAIL = tostring(msg)
-    if statusLabel and statusLabel.Parent then statusLabel.Text = "Status: " .. tostring(msg) end
-    if GUI_REF.stageDetail and GUI_REF.stageDetail.Parent then GUI_REF.stageDetail.Text = tostring(msg) end
-end
+setStatus = function(msg) if statusLabel then statusLabel.Text = "Status: " .. tostring(msg) end end
+setStage = function(stageName, detail) setStatus(tostring(stageName) .. " - " .. tostring(detail)) end
 
-setStage = function(stageName, detail)
-    CURRENT_STAGE = tostring(stageName or "WORKING")
-    CURRENT_STAGE_DETAIL = tostring(detail or CURRENT_STAGE_DETAIL or "")
-    if GUI_REF.stageName and GUI_REF.stageName.Parent then GUI_REF.stageName.Text = CURRENT_STAGE end
-    if GUI_REF.stageDetail and GUI_REF.stageDetail.Parent then GUI_REF.stageDetail.Text = CURRENT_STAGE_DETAIL end
-    setStatus(CURRENT_STAGE_DETAIL)
-end
-
-local dashTab = tabFrames[1]
-
-local function createCard(parent, height, order)
-    local card = Instance.new("Frame")
-    card.Size = UDim2.new(1, 0, 0, height)
-    card.BackgroundColor3 = Color3.fromRGB(24, 28, 44)
-    card.LayoutOrder = order or 0
-    card.ZIndex = 3
-    card.Parent = parent
-    addCorner(card, 8)
-    addStroke(card, Color3.fromRGB(50, 60, 90), 1)
-    return card
-end
-
-local stateBanner = createCard(dashTab, 44, 1)
-
-local stateIndicator = Instance.new("Frame")
-stateIndicator.Size = UDim2.fromOffset(8, 8)
-stateIndicator.Position = UDim2.fromOffset(14, 18)
-stateIndicator.BorderSizePixel = 0
-stateIndicator.ZIndex = 5
-stateIndicator.Parent = stateBanner
-addCorner(stateIndicator, 4)
-
-local stateText = Instance.new("TextLabel")
-stateText.Size = UDim2.new(1, -36, 1, 0)
-stateText.Position = UDim2.fromOffset(30, 0)
-stateText.BackgroundTransparency = 1
-stateText.Font = Enum.Font.GothamBold
-stateText.TextSize = FS + 1
-stateText.TextColor3 = Color3.new(1, 1, 1)
-stateText.TextXAlignment = Enum.TextXAlignment.Left
-stateText.ZIndex = 5
-stateText.Parent = stateBanner
-
-local function updateStateBanner()
-    if CONFIG.RUNNING then
-        stateBanner.BackgroundColor3 = Color3.fromRGB(22, 55, 35)
-        stateIndicator.BackgroundColor3 = Color3.fromRGB(80, 250, 123)
-        stateText.Text = "RUNNING"
-        stateText.TextColor3 = Color3.fromRGB(180, 255, 200)
-    else
-        stateBanner.BackgroundColor3 = Color3.fromRGB(60, 35, 20)
-        stateIndicator.BackgroundColor3 = Color3.fromRGB(255, 180, 50)
-        stateText.Text = "PAUSED"
-        stateText.TextColor3 = Color3.fromRGB(255, 220, 160)
-    end
-end
-GUI_REF.updateStateBanner = updateStateBanner
-
-local stageCard = createCard(dashTab, 54, 2)
-local stageNameLabel = Instance.new("TextLabel")
-stageNameLabel.Size = UDim2.new(0.34, -12, 1, 0)
-stageNameLabel.Position = UDim2.fromOffset(12, 0)
-stageNameLabel.BackgroundTransparency = 1
-stageNameLabel.Text = CURRENT_STAGE
-stageNameLabel.TextColor3 = Color3.fromRGB(165, 151, 255)
-stageNameLabel.Font = Enum.Font.GothamBold
-stageNameLabel.TextSize = FS
-stageNameLabel.TextXAlignment = Enum.TextXAlignment.Left
-stageNameLabel.ZIndex = 4
-stageNameLabel.Parent = stageCard
-GUI_REF.stageName = stageNameLabel
-
-local stageDetailLabel = Instance.new("TextLabel")
-stageDetailLabel.Size = UDim2.new(0.66, -16, 1, 0)
-stageDetailLabel.Position = UDim2.new(0.34, 10, 0, 0)
-stageDetailLabel.BackgroundTransparency = 1
-stageDetailLabel.Text = CURRENT_STAGE_DETAIL
-stageDetailLabel.TextColor3 = THEME.Muted
-stageDetailLabel.Font = Enum.Font.GothamMedium
-stageDetailLabel.TextSize = FS - 1
-stageDetailLabel.TextXAlignment = Enum.TextXAlignment.Left
-stageDetailLabel.TextWrapped = true
-stageDetailLabel.ZIndex = 4
-stageDetailLabel.Parent = stageCard
-GUI_REF.stageDetail = stageDetailLabel
-
-local questCard = createCard(dashTab, 68, 3)
-local questTitle = Instance.new("TextLabel")
-questTitle.Size = UDim2.new(1, -16, 0, 16)
-questTitle.Position = UDim2.fromOffset(10, 4)
-questTitle.BackgroundTransparency = 1
-questTitle.Text = "ELEMENTAL QUESTS"
-questTitle.TextColor3 = Color3.fromRGB(88, 101, 242)
-questTitle.Font = Enum.Font.GothamBold
-questTitle.TextSize = FS - 2
-questTitle.TextXAlignment = Enum.TextXAlignment.Left
-questTitle.ZIndex = 4
-questTitle.Parent = questCard
-
-local goalsLabel = Instance.new("TextLabel")
-goalsLabel.Size = UDim2.new(1, -16, 0, 44)
-goalsLabel.Position = UDim2.fromOffset(10, 20)
-goalsLabel.BackgroundTransparency = 1
-goalsLabel.Font = Enum.Font.Gotham
-goalsLabel.TextSize = FS
-goalsLabel.TextColor3 = Color3.fromRGB(200, 210, 230)
-goalsLabel.TextXAlignment = Enum.TextXAlignment.Left
-goalsLabel.TextYAlignment = Enum.TextYAlignment.Top
-goalsLabel.TextWrapped = true
-goalsLabel.Text = "Loading quests..."
-goalsLabel.ZIndex = 4
-goalsLabel.Parent = questCard
-GUI_REF.goalsLabel = goalsLabel
-
-local function renderGoals()
-    local quest = getQuestData()
-    if not quest or not quest.Quests then goalsLabel.Text = "Waiting for quests..."; return end
-    local lines = {}
-    for i = 1, 3 do
-        local goal = quest.Quests[i]
-        if goal then
-            local prog = goal.Progress or 0
-            local total = goal.Amount or 0
-            local pct = total > 0 and math.floor((prog / total) * 100) or 0
-            local bar = pct >= 100 and "[DONE]" or (pct >= 50 and "[HALF]" or "[...]")
-            lines[#lines + 1] = string.format("%s %s: %d/%d (%d%%)", bar, goal.PetID or "Unknown", prog, total, pct)
-        end
-    end
-    goalsLabel.Text = #lines > 0 and table.concat(lines, "\n") or "No quests"
-end
-
-local quickStatsCard = createCard(dashTab, 36, 4)
-local quickStatsLabel = Instance.new("TextLabel")
-quickStatsLabel.Size = UDim2.new(1, -16, 1, 0)
-quickStatsLabel.Position = UDim2.fromOffset(8, 0)
-quickStatsLabel.BackgroundTransparency = 1
-quickStatsLabel.Font = Enum.Font.GothamBold
-quickStatsLabel.TextSize = FS - 1
-quickStatsLabel.TextColor3 = Color3.fromRGB(140, 190, 255)
-quickStatsLabel.TextXAlignment = Enum.TextXAlignment.Left
-quickStatsLabel.Text = "00:00:00 | 0 Quests | 0 Caught | 0 Escaped | 0 Cubes"
-quickStatsLabel.TextTruncate = Enum.TextTruncate.AtEnd
-quickStatsLabel.ZIndex = 4
-quickStatsLabel.Parent = quickStatsCard
-GUI_REF.quickStatsLabel = quickStatsLabel
-
-local cubeCard = createCard(dashTab, 36, 5)
-local cubeInfoLabel = Instance.new("TextLabel")
-cubeInfoLabel.Size = UDim2.new(1, -16, 1, 0)
-cubeInfoLabel.Position = UDim2.fromOffset(8, 0)
-cubeInfoLabel.BackgroundTransparency = 1
-cubeInfoLabel.Font = Enum.Font.GothamMedium
-cubeInfoLabel.TextSize = FS
-cubeInfoLabel.TextColor3 = Color3.fromRGB(200, 210, 230)
-cubeInfoLabel.TextXAlignment = Enum.TextXAlignment.Left
-cubeInfoLabel.Text = "Normal: ... | Ultra: ... | Using: Normal"
-cubeInfoLabel.TextTruncate = Enum.TextTruncate.AtEnd
-cubeInfoLabel.ZIndex = 4
-cubeInfoLabel.Parent = cubeCard
-GUI_REF.cubeInfoLabel = cubeInfoLabel
-
-local buttonRow = Instance.new("Frame")
-buttonRow.Size = UDim2.new(1, 0, 0, 38)
-buttonRow.BackgroundTransparency = 1
-buttonRow.LayoutOrder = 6
-buttonRow.ZIndex = 3
-buttonRow.Parent = dashTab
-
-local startBtn = Instance.new("TextButton")
-startBtn.Size = UDim2.new(0.65, -4, 1, 0)
-startBtn.Position = UDim2.fromOffset(0, 0)
-startBtn.BackgroundColor3 = Color3.fromRGB(46, 153, 82)
-startBtn.BorderSizePixel = 0
-startBtn.Font = Enum.Font.GothamBold
-startBtn.TextSize = FS + 2
-startBtn.TextColor3 = Color3.new(1, 1, 1)
-startBtn.Text = "START"
-startBtn.ZIndex = 4
-startBtn.Parent = buttonRow
-addCorner(startBtn, 8)
-
-local summaryBtn = Instance.new("TextButton")
-summaryBtn.Size = UDim2.new(0.35, -4, 1, 0)
-summaryBtn.Position = UDim2.new(0.65, 4, 0, 0)
-summaryBtn.BackgroundColor3 = Color3.fromRGB(55, 65, 100)
-summaryBtn.BorderSizePixel = 0
-summaryBtn.Font = Enum.Font.GothamBold
-summaryBtn.TextSize = FS
-summaryBtn.TextColor3 = Color3.new(1, 1, 1)
-summaryBtn.Text = "Summary"
-summaryBtn.ZIndex = 4
-summaryBtn.Parent = buttonRow
-addCorner(summaryBtn, 8)
-
-local startBtnStroke = addStroke(startBtn, Color3.fromRGB(75, 220, 120), 1.5)
-
-local function updateStartButton()
-    if CONFIG.RUNNING then
-        startBtn.Text = "PAUSE"
-        startBtn.BackgroundColor3 = Color3.fromRGB(175, 80, 55)
-        if startBtnStroke then startBtnStroke.Color = Color3.fromRGB(240, 120, 80) end
-    else
-        startBtn.Text = "START"
-        startBtn.BackgroundColor3 = Color3.fromRGB(46, 153, 82)
-        if startBtnStroke then startBtnStroke.Color = Color3.fromRGB(75, 220, 120) end
-    end
-end
-
-startBtn.MouseButton1Click:Connect(function()
-    CONFIG.RUNNING = not CONFIG.RUNNING
-    updateStartButton()
-    updateStateBanner()
-    saveConfig()
-    if CONFIG.RUNNING then
-        if CONFIG.MODE == "QUEST" then LAST_QUEST_SHOP_VISIT = os.clock() end
-        addLog("Started")
-        sendWebhook("Started", "Runner is active", WEBHOOK_COLORS.GRAY)
-    else
-        addLog("Paused")
-        sendWebhook("Paused", "Runner stopped", WEBHOOK_COLORS.GRAY)
-    end
-end)
-
-summaryBtn.MouseButton1Click:Connect(function() sendSummaryDigest(true) end)
-
-local configTab = tabFrames[2]
-
-local function createToggleRow(parent, label, configKey, order)
-    local row = Instance.new("Frame")
-    row.Size = UDim2.new(1, 0, 0, mobile and 34 or 40)
-    row.BackgroundColor3 = Color3.fromRGB(24, 28, 44)
-    row.LayoutOrder = order
-    row.ZIndex = 3
-    row.Parent = parent
-    addCorner(row, 6)
-
-    local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(1, -70, 1, 0)
-    lbl.Position = UDim2.fromOffset(12, 0)
-    lbl.BackgroundTransparency = 1
-    lbl.Text = label
-    lbl.TextColor3 = Color3.fromRGB(210, 215, 230)
-    lbl.Font = Enum.Font.GothamMedium
-    lbl.TextSize = FS
-    lbl.TextXAlignment = Enum.TextXAlignment.Left
-    lbl.ZIndex = 4
-    lbl.Parent = row
-
-    local toggleBtn = Instance.new("TextButton")
-    toggleBtn.Size = UDim2.fromOffset(50, mobile and 22 or 26)
-    toggleBtn.Position = UDim2.new(1, -60, 0.5, mobile and -11 or -13)
-    toggleBtn.Font = Enum.Font.GothamBold
-    toggleBtn.TextSize = FS - 1
-    toggleBtn.TextColor3 = Color3.new(1, 1, 1)
-    toggleBtn.ZIndex = 5
-    toggleBtn.Parent = row
-    addCorner(toggleBtn, 4)
-
-    local function updateVisual()
-        local isOn = CONFIG[configKey]
-        toggleBtn.Text = isOn and "ON" or "OFF"
-        toggleBtn.BackgroundColor3 = isOn and Color3.fromRGB(46, 204, 113) or Color3.fromRGB(100, 100, 120)
-    end
-    updateVisual()
-
-    toggleBtn.MouseButton1Click:Connect(function()
-        CONFIG[configKey] = not CONFIG[configKey]
-        updateVisual()
-        saveConfig()
-        addLog(label .. ": " .. (CONFIG[configKey] and "on" or "off"))
-    end)
-
-    return row, toggleBtn, updateVisual
-end
-
-local function createSectionHeader(parent, text, order)
-    local header = Instance.new("TextLabel")
-    header.Size = UDim2.new(1, 0, 0, 22)
-    header.BackgroundTransparency = 1
-    header.Text = text
-    header.TextColor3 = Color3.fromRGB(88, 101, 242)
-    header.Font = Enum.Font.GothamBold
-    header.TextSize = FS - 1
-    header.TextXAlignment = Enum.TextXAlignment.Left
-    header.LayoutOrder = order
-    header.ZIndex = 4
-    header.Parent = parent
-    return header
-end
-
-createSectionHeader(configTab, "CATCHING", 1)
-createToggleRow(configTab, "Cube Type: Ultra", "USE_ULTRA", 2)
-
-createSectionHeader(configTab, "AUTOMATION", 10)
-createToggleRow(configTab, "Auto Buy Cubes", "AUTO_RESTOCK", 11)
-createToggleRow(configTab, "Auto Eat Fruits", "AUTO_FRUITS", 12)
-createToggleRow(configTab, "Auto Break Chests", "AUTO_BREAK", 13)
-
--- Configurable Shop Restock Interval (Default 30 seconds)
-local shopIntRow = Instance.new("Frame")
-shopIntRow.Size = UDim2.new(1, 0, 0, mobile and 34 or 40)
-shopIntRow.BackgroundColor3 = Color3.fromRGB(24, 28, 44)
-shopIntRow.LayoutOrder = 14
-shopIntRow.ZIndex = 3
-shopIntRow.Parent = configTab
-addCorner(shopIntRow, 6)
-
-local shopIntLbl = Instance.new("TextLabel")
-shopIntLbl.Size = UDim2.new(1, -90, 1, 0)
-shopIntLbl.Position = UDim2.fromOffset(12, 0)
-shopIntLbl.BackgroundTransparency = 1
-shopIntLbl.Text = "Shop Restock Interval (s)"
-shopIntLbl.TextColor3 = Color3.fromRGB(210, 215, 230)
-shopIntLbl.Font = Enum.Font.GothamMedium
-shopIntLbl.TextSize = FS
-shopIntLbl.TextXAlignment = Enum.TextXAlignment.Left
-shopIntLbl.ZIndex = 4
-shopIntLbl.Parent = shopIntRow
-
-local shopIntBox = Instance.new("TextBox")
-shopIntBox.Size = UDim2.fromOffset(60, mobile and 22 or 26)
-shopIntBox.Position = UDim2.new(1, -72, 0.5, mobile and -11 or -13)
-shopIntBox.BackgroundColor3 = Color3.fromRGB(35, 40, 60)
-shopIntBox.BorderSizePixel = 0
-shopIntBox.Font = Enum.Font.GothamBold
-shopIntBox.TextSize = FS
-shopIntBox.TextColor3 = Color3.new(1, 1, 1)
-shopIntBox.Text = tostring(CONFIG.SHOP_INTERVAL or 30)
-shopIntBox.ClearTextOnFocus = true
-shopIntBox.ZIndex = 5
-shopIntBox.Parent = shopIntRow
-addCorner(shopIntBox, 4)
-
-shopIntBox.FocusLost:Connect(function()
-    local num = tonumber(shopIntBox.Text)
-    if num and num >= 5 and num <= 600 then
-        CONFIG.SHOP_INTERVAL = math.floor(num)
-        shopIntBox.Text = tostring(CONFIG.SHOP_INTERVAL)
-        saveConfig()
-        addLog("Shop restock interval set to: " .. CONFIG.SHOP_INTERVAL .. "s")
-    else
-        shopIntBox.Text = tostring(CONFIG.SHOP_INTERVAL or 30)
-    end
-end)
-
-createSectionHeader(configTab, "ALERTS", 20)
-createToggleRow(configTab, "Alert on New Huge Inventory", "ALERT_RARE", 21)
-createToggleRow(configTab, "Alert on Low Cube Count", "ALERT_LOW_CUBES", 22)
-
-local threshRow = Instance.new("Frame")
-threshRow.Size = UDim2.new(1, 0, 0, mobile and 34 or 40)
-threshRow.BackgroundColor3 = Color3.fromRGB(24, 28, 44)
-threshRow.LayoutOrder = 23
-threshRow.ZIndex = 3
-threshRow.Parent = configTab
-addCorner(threshRow, 6)
-
-local threshLbl = Instance.new("TextLabel")
-threshLbl.Size = UDim2.new(1, -90, 1, 0)
-threshLbl.Position = UDim2.fromOffset(12, 0)
-threshLbl.BackgroundTransparency = 1
-threshLbl.Text = "Low Cube Threshold"
-threshLbl.TextColor3 = Color3.fromRGB(210, 215, 230)
-threshLbl.Font = Enum.Font.GothamMedium
-threshLbl.TextSize = FS
-threshLbl.TextXAlignment = Enum.TextXAlignment.Left
-threshLbl.ZIndex = 4
-threshLbl.Parent = threshRow
-
-local threshBox = Instance.new("TextBox")
-threshBox.Size = UDim2.fromOffset(60, mobile and 22 or 26)
-threshBox.Position = UDim2.new(1, -72, 0.5, mobile and -11 or -13)
-threshBox.BackgroundColor3 = Color3.fromRGB(35, 40, 60)
-threshBox.BorderSizePixel = 0
-threshBox.Font = Enum.Font.GothamBold
-threshBox.TextSize = FS
-threshBox.TextColor3 = Color3.new(1, 1, 1)
-threshBox.Text = tostring(CONFIG.CUBE_ALERT_THRESHOLD)
-threshBox.ClearTextOnFocus = true
-threshBox.ZIndex = 5
-threshBox.Parent = threshRow
-addCorner(threshBox, 4)
-
-threshBox.FocusLost:Connect(function()
-    local num = tonumber(threshBox.Text)
-    if num and num >= 1 and num <= 9999 then
-        CONFIG.CUBE_ALERT_THRESHOLD = math.floor(num)
-        threshBox.Text = tostring(CONFIG.CUBE_ALERT_THRESHOLD)
-        saveConfig()
-        addLog("Alert threshold: " .. CONFIG.CUBE_ALERT_THRESHOLD)
-    else
-        threshBox.Text = tostring(CONFIG.CUBE_ALERT_THRESHOLD)
-    end
-end)
-
-createSectionHeader(configTab, "DISCORD WEBHOOK", 30)
-
-local webhookRow = Instance.new("Frame")
-webhookRow.Size = UDim2.new(1, 0, 0, mobile and 34 or 40)
-webhookRow.BackgroundColor3 = Color3.fromRGB(24, 28, 44)
-webhookRow.LayoutOrder = 31
-webhookRow.ZIndex = 3
-webhookRow.Parent = configTab
-addCorner(webhookRow, 6)
-
-local webhookBox = Instance.new("TextBox")
-webhookBox.Size = UDim2.new(1, -90, 0, mobile and 24 or 28)
-webhookBox.Position = UDim2.fromOffset(8, mobile and 5 or 6)
-webhookBox.BackgroundColor3 = Color3.fromRGB(35, 40, 60)
-webhookBox.BorderSizePixel = 0
-webhookBox.Font = Enum.Font.Gotham
-webhookBox.TextSize = FS - 1
-webhookBox.TextColor3 = Color3.fromRGB(220, 225, 240)
-webhookBox.PlaceholderText = "Paste Discord Webhook URL..."
-webhookBox.Text = CONFIG.WEBHOOK_URL
-webhookBox.ClearTextOnFocus = false
-webhookBox.TextXAlignment = Enum.TextXAlignment.Left
-webhookBox.ClipsDescendants = true
-webhookBox.TextTruncate = Enum.TextTruncate.AtEnd
-webhookBox.ZIndex = 5
-webhookBox.Parent = webhookRow
-addCorner(webhookBox, 4)
-addPadding(webhookBox, 6, 6, 0, 0)
-
-local testBtn = Instance.new("TextButton")
-testBtn.Size = UDim2.fromOffset(68, mobile and 24 or 28)
-testBtn.Position = UDim2.new(1, -76, 0, mobile and 5 or 6)
-testBtn.BackgroundColor3 = Color3.fromRGB(88, 101, 242)
-testBtn.BorderSizePixel = 0
-testBtn.Font = Enum.Font.GothamBold
-testBtn.TextSize = FS - 1
-testBtn.TextColor3 = Color3.new(1, 1, 1)
-testBtn.Text = "TEST"
-testBtn.ZIndex = 5
-testBtn.Parent = webhookRow
-addCorner(testBtn, 4)
-
-webhookBox.FocusLost:Connect(function()
-    CONFIG.WEBHOOK_URL = string.gsub(webhookBox.Text, "%s+", "")
-    saveConfig()
-end)
-
-testBtn.MouseButton1Click:Connect(function()
-    CONFIG.WEBHOOK_URL = string.gsub(webhookBox.Text, "%s+", "")
-    saveConfig()
-    if CONFIG.WEBHOOK_URL ~= "" then
-        local success, status = sendSummaryDigest(true)
-        if success then addLog("Test sent") else addLog("Test failed (status: " .. tostring(status) .. ")") end
-    else
-        setStatus("Need webhook URL")
-    end
-end)
-
-local statsTab = tabFrames[3]
-
-local function createStatRow(parent, label, order)
-    local row = Instance.new("Frame")
-    row.Size = UDim2.new(1, 0, 0, mobile and 30 or 34)
-    row.BackgroundColor3 = Color3.fromRGB(24, 28, 44)
-    row.LayoutOrder = order
-    row.ZIndex = 3
-    row.Parent = parent
-    addCorner(row, 6)
-
-    local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(0.55, 0, 1, 0)
-    lbl.Position = UDim2.fromOffset(12, 0)
-    lbl.BackgroundTransparency = 1
-    lbl.Text = label
-    lbl.TextColor3 = Color3.fromRGB(160, 170, 200)
-    lbl.Font = Enum.Font.GothamMedium
-    lbl.TextSize = FS
-    lbl.TextXAlignment = Enum.TextXAlignment.Left
-    lbl.ZIndex = 4
-    lbl.Parent = row
-
-    local valLbl = Instance.new("TextLabel")
-    valLbl.Size = UDim2.new(0.45, -12, 1, 0)
-    valLbl.Position = UDim2.new(0.55, 0, 0, 0)
-    valLbl.BackgroundTransparency = 1
-    valLbl.Text = "-"
-    valLbl.TextColor3 = Color3.new(1, 1, 1)
-    valLbl.Font = Enum.Font.GothamBold
-    valLbl.TextSize = FS
-    valLbl.TextXAlignment = Enum.TextXAlignment.Right
-    valLbl.ZIndex = 4
-    valLbl.Parent = row
-
-    return valLbl
-end
-
-createSectionHeader(statsTab, "SESSION STATISTICS", 0)
-GUI_REF.statRuntime = createStatRow(statsTab, "Runtime", 1)
-GUI_REF.statQuests = createStatRow(statsTab, "Quests Completed", 2)
-GUI_REF.statCaught = createStatRow(statsTab, "Pets Caught", 3)
-GUI_REF.statEscaped = createStatRow(statsTab, "Pets Escaped", 4)
-GUI_REF.statCatchRate = createStatRow(statsTab, "Catch Rate", 5)
-GUI_REF.statCubesUsed = createStatRow(statsTab, "Cubes Used", 6)
-GUI_REF.statCubesHour = createStatRow(statsTab, "Cubes/Hour", 7)
-GUI_REF.statDiamonds = createStatRow(statsTab, "Diamonds Spent", 8)
-GUI_REF.statRare = createStatRow(statsTab, "Huge Catches", 9)
-createSectionHeader(statsTab, "INVENTORY", 10)
-GUI_REF.statNormalCubes = createStatRow(statsTab, "Normal Pet Cubes", 11)
-GUI_REF.statUltraCubes = createStatRow(statsTab, "Ultra Pet Cubes", 12)
-createSectionHeader(statsTab, "ACTIVITY", 20)
-GUI_REF.statFruits = createStatRow(statsTab, "Fruits Eaten", 22)
-GUI_REF.statChests = createStatRow(statsTab, "Chests Broken", 24)
-GUI_REF.statCubesBought = createStatRow(statsTab, "Cubes Auto-Bought", 25)
-GUI_REF.statPurchaseRetries = createStatRow(statsTab, "Purchase Retries", 26)
-GUI_REF.statWebhookFailures = createStatRow(statsTab, "Webhook Failures", 27)
-GUI_REF.statServersVisited = createStatRow(statsTab, "Servers Remembered", 28)
-
-createSectionHeader(statsTab, "RECENT SERVERS (NEWEST FIRST)", 30)
-GUI_REF.serverHistoryCard = Instance.new("Frame")
-GUI_REF.serverHistoryCard.Size = UDim2.new(1, 0, 0, 180)
-GUI_REF.serverHistoryCard.BackgroundColor3 = THEME.Surface
-GUI_REF.serverHistoryCard.LayoutOrder = 31
-GUI_REF.serverHistoryCard.ZIndex = 3
-GUI_REF.serverHistoryCard.Parent = statsTab
-addCorner(GUI_REF.serverHistoryCard, 8)
-
-GUI_REF.serverHistoryLabel = Instance.new("TextLabel")
-GUI_REF.serverHistoryLabel.Size = UDim2.new(1, -20, 1, -14)
-GUI_REF.serverHistoryLabel.Position = UDim2.fromOffset(10, 7)
-GUI_REF.serverHistoryLabel.BackgroundTransparency = 1
-GUI_REF.serverHistoryLabel.Text = "No servers recorded"
-GUI_REF.serverHistoryLabel.TextColor3 = THEME.Muted
-GUI_REF.serverHistoryLabel.Font = Enum.Font.Code
-GUI_REF.serverHistoryLabel.TextSize = FS - 1
-GUI_REF.serverHistoryLabel.TextXAlignment = Enum.TextXAlignment.Left
-GUI_REF.serverHistoryLabel.TextYAlignment = Enum.TextYAlignment.Top
-GUI_REF.serverHistoryLabel.TextWrapped = true
-GUI_REF.serverHistoryLabel.ZIndex = 4
-GUI_REF.serverHistoryLabel.Parent = GUI_REF.serverHistoryCard
-
-updateServerHistoryUI = function()
-    if not GUI_REF.serverHistoryLabel or not GUI_REF.serverHistoryLabel.Parent then return end
-    local lines = {}
-    for index = #SERVER_HISTORY, 1, -1 do
-        local newestNumber = #SERVER_HISTORY - index + 1
-        local serverId = SERVER_HISTORY[index]
-        table.insert(lines, string.format("%02d  %s", newestNumber, string.sub(serverId, 1, 12)))
-    end
-    GUI_REF.serverHistoryLabel.Text = #lines > 0 and table.concat(lines, "\n") or "No servers recorded"
-end
-
-local function updateStatsTab()
-    GUI_REF.statRuntime.Text = getFormattedRuntime()
-    GUI_REF.statQuests.Text = tostring(STATS.QuestsCompleted)
-    GUI_REF.statCaught.Text = tostring(STATS.PetsCaught)
-    GUI_REF.statEscaped.Text = tostring(STATS.PetsEscaped)
-    GUI_REF.statCatchRate.Text = getCatchPercent()
-    GUI_REF.statCubesUsed.Text = tostring(STATS.CubesSpent)
-    GUI_REF.statCubesHour.Text = getCubesPerHour()
-    GUI_REF.statDiamonds.Text = string.format("%s ", tostring(STATS.DiamondsSpent))
-    GUI_REF.statRare.Text = tostring(STATS.RareCatches)
-    GUI_REF.statNormalCubes.Text = tostring(getCubeCount(false))
-    GUI_REF.statUltraCubes.Text = tostring(getCubeCount(true))
-    GUI_REF.statFruits.Text = tostring(STATS.FruitsEaten)
-    GUI_REF.statChests.Text = tostring(STATS.ChestsBroken)
-    GUI_REF.statCubesBought.Text = tostring(STATS.CubesBought)
-    GUI_REF.statPurchaseRetries.Text = tostring(STATS.PurchaseRetries)
-    GUI_REF.statWebhookFailures.Text = tostring(STATS.WebhookFailures)
-    GUI_REF.statServersVisited.Text = tostring(#SERVER_HISTORY) .. "/" .. tostring(SERVER_HISTORY_LIMIT)
-    if updateServerHistoryUI then updateServerHistoryUI() end
-end
-
-local logTab = tabFrames[4]
-local logCard = Instance.new("Frame")
-logCard.Size = UDim2.new(1, 0, 0, 2000)
-logCard.BackgroundColor3 = Color3.fromRGB(14, 16, 24)
-logCard.LayoutOrder = 1
-logCard.ZIndex = 3
-logCard.Parent = logTab
-addCorner(logCard, 8)
-
-local logLabel = Instance.new("TextLabel")
-logLabel.Size = UDim2.new(1, -16, 1, -8)
-logLabel.Position = UDim2.fromOffset(8, 4)
-logLabel.BackgroundTransparency = 1
-logLabel.Font = Enum.Font.Code
-logLabel.TextSize = FS - 2
-logLabel.TextColor3 = Color3.fromRGB(160, 175, 200)
-logLabel.TextXAlignment = Enum.TextXAlignment.Left
-logLabel.TextYAlignment = Enum.TextYAlignment.Top
-logLabel.TextWrapped = true
-logLabel.Text = "Log started"
-logLabel.ZIndex = 4
-logLabel.Parent = logCard
-GUI_REF.logLabel = logLabel
-
-logLabel:GetPropertyChangedSignal("TextBounds"):Connect(function()
-    logCard.Size = UDim2.new(1, 0, 0, math.max(200, logLabel.TextBounds.Y + 16))
-end)
-
-updateStateBanner()
-updateStartButton()
-
-local resumedFromTeleport = SESSION_ENV and SESSION_ENV.EQR_RESUMED_FROM_TELEPORT == true
-local sessionMode = SESSION_ENV and SESSION_ENV.EQR_SESSION_MODE or nil
-if SESSION_ENV then SESSION_ENV.EQR_RESUMED_FROM_TELEPORT = nil end
-
-local MODE_SELECTED = isValidMode(sessionMode)
-if MODE_SELECTED then
-    CONFIG.MODE = sessionMode
-else
-    CONFIG.RUNNING = false
-end
-
-local function activateSelectedMode(mode, resumeReason)
-    CONFIG.MODE = mode
-    rememberSessionMode(mode)
-    MODE_SELECTED = true
-    CONFIG.RUNNING = true
-
-    if CONFIG.MODE == "QUEST" then LAST_QUEST_SHOP_VISIT = os.clock() end
-
-    if GUI_REF.modePill then
-        GUI_REF.modePill.Text = CONFIG.MODE
-        GUI_REF.modePill.BackgroundColor3 = CONFIG.MODE == "HUGE" and Color3.fromRGB(102, 73, 181) or Color3.fromRGB(38, 126, 92)
-    end
-
-    updateStartButton()
-    updateStateBanner()
-    setStage(CONFIG.MODE, resumeReason or (CONFIG.MODE .. " mode started"))
-    addLog(resumeReason or ("Mode selected: " .. CONFIG.MODE))
-
-    task.defer(function()
-        task.wait(0.2)
-        if setCollapsed then setCollapsed(true) end
-    end)
-end
-
-local function createModeSelector()
-    local existingSelector = playerGui:FindFirstChild("ModeSelector")
-    if existingSelector then existingSelector:Destroy() end
-
-    local screenGui = Instance.new("ScreenGui")
-    screenGui.Name = "ModeSelector"
-    screenGui.ResetOnSpawn = false
-    screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    screenGui.Parent = playerGui
-
-    local overlay = Instance.new("Frame")
-    overlay.Size = UDim2.fromScale(1, 1)
-    overlay.BackgroundColor3 = Color3.fromRGB(4, 6, 12)
-    overlay.BackgroundTransparency = 0.28
-    overlay.BorderSizePixel = 0
-    overlay.Parent = screenGui
-
-    local frame = Instance.new("Frame")
-    frame.Size = UDim2.fromOffset(mobile and 320 or 390, mobile and 250 or 270)
-    frame.Position = UDim2.new(0.5, mobile and -160 or -195, 0.5, mobile and -125 or -135)
-    frame.BackgroundColor3 = Color3.fromRGB(19, 22, 35)
-    frame.BorderSizePixel = 0
-    frame.Parent = overlay
-    addCorner(frame, 16)
-    addStroke(frame, THEME.Accent, 1.5)
-
-    local title = Instance.new("TextLabel")
-    title.Size = UDim2.new(1, -32, 0, 34)
-    title.Position = UDim2.fromOffset(16, 14)
-    title.BackgroundTransparency = 1
-    title.Text = "Choose your run mode"
-    title.TextColor3 = THEME.Text
-    title.TextSize = mobile and 17 or 20
-    title.Font = Enum.Font.GothamBold
-    title.TextXAlignment = Enum.TextXAlignment.Left
-    title.Parent = frame
-
-    local subtitle = Instance.new("TextLabel")
-    subtitle.Size = UDim2.new(1, -32, 0, 34)
-    subtitle.Position = UDim2.fromOffset(16, 46)
-    subtitle.BackgroundTransparency = 1
-    subtitle.Text = "The runner starts immediately and minimizes after selection."
-    subtitle.TextColor3 = THEME.Muted
-    subtitle.TextSize = FS - 1
-    subtitle.Font = Enum.Font.Gotham
-    subtitle.TextWrapped = true
-    subtitle.TextXAlignment = Enum.TextXAlignment.Left
-    subtitle.Parent = frame
-
-    local function makeModeButton(y, titleText, descriptionText, color)
-        local button = Instance.new("TextButton")
-        button.Size = UDim2.new(1, -32, 0, mobile and 66 or 72)
-        button.Position = UDim2.fromOffset(16, y)
-        button.BackgroundColor3 = Color3.fromRGB(28, 33, 52)
-        button.BorderSizePixel = 0
-        button.Text = ""
-        button.Parent = frame
-        addCorner(button, 10)
-        addStroke(button, color, 1.2)
-
-        local buttonTitle = Instance.new("TextLabel")
-        buttonTitle.Size = UDim2.new(1, -34, 0, 24)
-        buttonTitle.Position = UDim2.fromOffset(24, 9)
-        buttonTitle.BackgroundTransparency = 1
-        buttonTitle.Text = titleText
-        buttonTitle.TextColor3 = THEME.Text
-        buttonTitle.Font = Enum.Font.GothamBold
-        buttonTitle.TextSize = FS + 1
-        buttonTitle.TextXAlignment = Enum.TextXAlignment.Left
-        buttonTitle.Parent = button
-
-        local description = Instance.new("TextLabel")
-        description.Size = UDim2.new(1, -34, 0, mobile and 27 or 32)
-        description.Position = UDim2.fromOffset(24, 32)
-        description.BackgroundTransparency = 1
-        description.Text = descriptionText
-        description.TextColor3 = THEME.Muted
-        description.Font = Enum.Font.Gotham
-        description.TextSize = FS - 1
-        description.TextWrapped = true
-        description.TextXAlignment = Enum.TextXAlignment.Left
-        description.Parent = button
-
-        return button
-    end
-
-    local questBtn = makeModeButton(mobile and 88 or 92, "Quest Mode", "Stay in one server, buy cubes, finish quests, break chest and reroll pets.", Color3.fromRGB(66, 205, 132))
-    local hugeBtn = makeModeButton(mobile and 162 or 172, "Huge Mode", "Buy stock, break chest, check for Huge, then hop to fresh server.", THEME.Accent)
-
-    questBtn.MouseButton1Click:Connect(function()
-        screenGui:Destroy()
-        activateSelectedMode("QUEST", "Quest mode started")
-    end)
-    hugeBtn.MouseButton1Click:Connect(function()
-        screenGui:Destroy()
-        activateSelectedMode("HUGE", "Huge mode started")
-    end)
-
-    return screenGui
-end
-
-if not MODE_SELECTED then
-    createModeSelector()
-    while not MODE_SELECTED do task.wait(0.1) end
-else
-    activateSelectedMode(CONFIG.MODE, resumedFromTeleport and ("Resumed " .. CONFIG.MODE .. " after server hop") or ("Resumed " .. CONFIG.MODE .. " for session"))
-end
-
-if updateServerHistoryUI then updateServerHistoryUI() end
+CONFIG.RUNNING = true
+CONFIG.MODE = "QUEST"
 
 task.spawn(function()
     while gui.Parent do
@@ -2005,403 +817,49 @@ task.spawn(function()
     end
 end)
 
-local function seedKnownPetInventory()
-    local count = 0
-    local counted = {}
-    local readyDeadline = os.clock() + 8
-
-    local function snapshotCurrentPets()
-        local data = Save and Save.Get()
-        local petInv = data and data.Inventory and data.Inventory.Pet
-        if type(petInv) ~= "table" then return false end
-        for uuid in pairs(petInv) do
-            KNOWN_PET_UUIDS[uuid] = true
-            if not counted[uuid] then counted[uuid] = true; count = count + 1 end
-        end
-        return true
-    end
-
-    while not snapshotCurrentPets() and os.clock() < readyDeadline do task.wait(0.25) end
-    task.wait(2)
-    snapshotCurrentPets()
-    addLog("Inventory baseline saved: " .. tostring(count) .. " existing pets ignored")
-end
-
-pcall(seedKnownPetInventory)
-
-task.spawn(function()
-    while gui.Parent do
-        pcall(function()
-            local data = Save and Save.Get()
-            local petInv = data and data.Inventory and data.Inventory.Pet or {}
-
-            for uuid, petData in pairs(petInv) do
-                if type(petData) == "table" and not KNOWN_PET_UUIDS[uuid] then
-                    KNOWN_PET_UUIDS[uuid] = true
-                    local isHuge, petId = isHugeInventoryPet(petData)
-
-                    if isHuge then
-                        local displayName = petId ~= "" and petId or "Unknown Huge"
-                        addLog("New Huge entered inventory: " .. displayName)
-
-                        task.delay(1.25, function()
-                            if gui.Parent and not CAUGHT_RARE_UUIDS[uuid] and CONFIG.ALERT_RARE then
-                                sendWebhookReliable(
-                                    "NEW HUGE IN INVENTORY!",
-                                    "A new **" .. tostring(displayName) .. "** appeared in your inventory.",
-                                    WEBHOOK_COLORS.GOLD,
-                                    {
-                                        { name = "Pet", value = tostring(displayName), inline = true },
-                                        { name = "Player", value = player.Name, inline = true },
-                                        { name = "Mode", value = CONFIG.MODE, inline = true },
-                                        { name = "Runtime", value = getFormattedRuntime(), inline = true },
-                                    }
-                                )
-                            end
-                        end)
-                    end
-                end
-            end
-        end)
-        task.wait(0.5)
-    end
-end)
-
-task.spawn(function()
-    local lastAlertTime = 0
-    while gui.Parent do
-        if CONFIG.ALERT_LOW_CUBES then
-            local cubes = getCubeCount()
-            if cubes <= CONFIG.CUBE_ALERT_THRESHOLD and (os.time() - lastAlertTime) > 300 then
-                lastAlertTime = os.time()
-                addLog("Low cubes: " .. cubes .. " (alert at " .. CONFIG.CUBE_ALERT_THRESHOLD .. ")")
-                sendWebhook(
-                    "Low Cubes",
-                    string.format("**%d** %s left (alert: %d)", cubes, getCubeName(), CONFIG.CUBE_ALERT_THRESHOLD),
-                    WEBHOOK_COLORS.ORANGE,
-                    {
-                        { name = "Current Count", value = tostring(cubes), inline = true },
-                        { name = "Threshold", value = tostring(CONFIG.CUBE_ALERT_THRESHOLD), inline = true },
-                        { name = "Auto Buy", value = CONFIG.AUTO_RESTOCK and "ON" or "OFF", inline = true },
-                    }
-                )
-            end
-        end
-        task.wait(30)
-    end
-end)
-
-task.spawn(function()
-    while gui.Parent do
-        pcall(function()
-            renderGoals()
-            updateStatsTab()
-            if GUI_REF.quickStatsLabel then
-                GUI_REF.quickStatsLabel.Text = string.format(
-                    "%s | %d Servers | %d Caught | %d Escaped | %d Cubes",
-                    getFormattedRuntime(), #SERVER_HISTORY, STATS.PetsCaught, STATS.PetsEscaped, getCubeCount()
-                )
-            end
-            if GUI_REF.cubeInfoLabel then
-                GUI_REF.cubeInfoLabel.Text = string.format(
-                    "Normal: %d | Ultra: %d | Using: %s",
-                    getCubeCount(false), getCubeCount(true), getCubeName()
-                )
-            end
-        end)
-
-        if (os.time() - LAST_CUBE_CHECK_TIME) >= CUBE_CHECK_INTERVAL then
-            LAST_CUBE_CHECK_TIME = os.time()
-            sendInventoryAlert()
-        end
-        if (os.time() - LAST_SUMMARY_TIME) >= SUMMARY_INTERVAL then
-            sendSummaryDigest(false)
-        end
-
-        task.wait(1)
-    end
-end)
-
-local function goToElementalRealm()
-    local alreadyThere = false
-    pcall(function()
-        alreadyThere = MapCmds and MapCmds.GetCurrentZone and MapCmds.GetCurrentZone() == "Elemental Realm"
-    end)
-    if alreadyThere then return true end
-
-    if setStage then setStage("TRAVEL", "Going to Elemental Realm") else setStatus("Going to Elemental Realm") end
-
-    local teleported = false
-    pcall(function()
-        if MapCmds and MapCmds.Teleport then MapCmds.Teleport("Elemental Realm"); teleported = true end
-    end)
-
-    if not teleported then
-        local character = player.Character
-        local root = character and character:FindFirstChild("HumanoidRootPart")
-        if root then root.CFrame = ELEMENTAL_REALM_CFRAME; teleported = true end
-    end
-
-    task.wait(1.5)
-    return teleported
-end
-
-local function holdPlayerAt(targetCFrame)
-    local root = getRootPart()
-    if not root or not targetCFrame then return false end
-    if (root.Position - targetCFrame.Position).Magnitude > 3 then root.CFrame = targetCFrame end
-    return true
-end
-
-local function waitForBossChest(timeoutSeconds)
-    local deadline = os.clock() + math.max(0.5, tonumber(timeoutSeconds) or CHEST_LOAD_TIMEOUT)
-    repeat
-        holdPlayerAt(BOSS_CHEST_CFRAME)
-        local bossChest = checkForBossChest()
-        if bossChest and bossChest.Parent then return bossChest end
-        local remaining = math.max(0, deadline - os.clock())
-        if setStage then setStage("CHEST", string.format("Waiting for chest to load • %.1fs", remaining)) end
-        task.wait(math.min(0.25, remaining))
-    until os.clock() >= deadline or not CONFIG.RUNNING
-    return checkForBossChest()
-end
-
-local function activateBossChest(bossChest)
-    if not bossChest or not bossChest.Parent then return false end
-    local activated = false
-    for _, object in ipairs(bossChest:GetDescendants()) do
-        if object:IsA("ClickDetector") and fireclickdetector then
-            pcall(function() fireclickdetector(object) end); activated = true
-        elseif object:IsA("ProximityPrompt") and fireproximityprompt then
-            pcall(function() fireproximityprompt(object) end); activated = true
-        end
-    end
-
-    local camera = workspace.CurrentCamera
-    if camera then
-        pcall(function()
-            local chestPosition = bossChest:GetPivot().Position
-            camera.CFrame = CFrame.lookAt(camera.CFrame.Position, chestPosition)
-            task.wait()
-            local screenPoint = camera:WorldToViewportPoint(chestPosition)
-            if screenPoint.Z > 0 then
-                VirtualUser:CaptureController()
-                VirtualUser:ClickButton1(Vector2.new(screenPoint.X, screenPoint.Y))
-            end
-        end)
-    end
-    return activated
-end
-
 local function breakBossChest(bossChest)
     if not bossChest or not bossChest.Parent then return false end
     local net = game:GetService("ReplicatedStorage"):FindFirstChild("Network")
     local damageRemote = net and net:FindFirstChild("Breakables_PlayerDealDamage")
-    local setTargetBulk = net and net:FindFirstChild("Pets_SetTargetBulk")
+    if not damageRemote then return false end
 
-    if not damageRemote then addLog("Cannot break boss chest: damage remote missing"); return false end
-    if not movePlayer(BOSS_CHEST_CFRAME, "Going to boss chest") then return false end
-
-    task.wait(0.75)
-    bossChest = checkForBossChest() or bossChest
-    if not bossChest or not bossChest.Parent then addLog("Boss chest disappeared before interaction"); return false end
-
-    addLog("Boss chest found; clicking and assigning pets")
-    if setStage then setStage("CHEST", "Breaking boss chest") else setStatus("Breaking boss chest") end
-
+    movePlayer(BOSS_CHEST_CFRAME, "Breaking boss chest")
     local started = os.clock()
-    local goneSince = nil
-    local lastInteraction = -math.huge
-    local lastPetTarget = -math.huge
-
-    local watchedChest = nil
-    local chestDestroyed = false
-    local destroyConnection = nil
-
-    local function disconnectChestWatch()
-        if destroyConnection then destroyConnection:Disconnect(); destroyConnection = nil end
-    end
-
-    local function watchChest(chest)
-        if not chest or watchedChest == chest then return end
-        disconnectChestWatch()
-        watchedChest = chest
-        chestDestroyed = false
-        pcall(function() destroyConnection = chest.Destroying:Connect(function() chestDestroyed = true end) end)
-    end
-
-    watchChest(bossChest)
 
     while CONFIG.RUNNING and os.clock() - started < CHEST_BREAK_TIMEOUT do
-        holdPlayerAt(BOSS_CHEST_CFRAME)
         local currentChest = checkForBossChest()
         if currentChest and currentChest.Parent then
-            bossChest = currentChest
-            watchChest(currentChest)
-            goneSince = nil
-            local now = os.clock()
-
-            if now - lastInteraction >= 0.5 then
-                activateBossChest(bossChest)
-                lastInteraction = now
-            end
-
-            pcall(function() damageRemote:FireServer(bossChest.Name) end)
-
-            if setTargetBulk and now - lastPetTarget >= 0.35 then
-                local data = Save and Save.Get()
-                local equippedPets = data and data.EquippedPets or {}
-                local petTargets = {}
-                for petUid in pairs(equippedPets) do petTargets[petUid] = bossChest.Name end
-                if next(petTargets) then pcall(function() setTargetBulk:FireServer(petTargets) end) end
-                lastPetTarget = now
-            end
+            pcall(function() damageRemote:FireServer(currentChest.Name) end)
         else
-            local exactChestGone = chestDestroyed or not watchedChest or not watchedChest.Parent or not watchedChest:IsDescendantOf(workspace)
-            if exactChestGone then goneSince = goneSince or os.clock() else goneSince = nil end
-
-            local elapsed = os.clock() - started
-            local goneLongEnough = goneSince and (os.clock() - goneSince >= CHEST_GONE_CONFIRM_TIME)
-
-            if exactChestGone and elapsed >= CHEST_MIN_DWELL_TIME and goneLongEnough and not checkForBossChest() then
-                disconnectChestWatch()
-                STATS.ChestsBroken = STATS.ChestsBroken + 1
-                addLog("Boss chest destroyed!")
-
-                -- Teleport to loot location & move around loot spot for 3.0 seconds to gather loot items
-                movePlayer(BOSS_CHEST_LOOT_CFRAME, "Collecting boss chest loot")
-                local lootStart = os.clock()
-                while os.clock() - lootStart < 3.0 and CONFIG.RUNNING do
-                    local root = getRootPart()
-                    if root then
-                        -- Subtle circle sweep around loot spot to pick up drops
-                        local offsetAngle = (os.clock() - lootStart) * 5
-                        root.CFrame = BOSS_CHEST_LOOT_CFRAME * CFrame.new(math.cos(offsetAngle)*3, 0, math.sin(offsetAngle)*3)
-                    end
-                    task.wait(0.1)
+            STATS.ChestsBroken = STATS.ChestsBroken + 1
+            addLog("Boss chest destroyed!")
+            movePlayer(BOSS_CHEST_LOOT_CFRAME, "Collecting chest drops")
+            local lootStart = os.clock()
+            while os.clock() - lootStart < 3.0 and CONFIG.RUNNING do
+                local root = getRootPart()
+                if root then
+                    local offsetAngle = (os.clock() - lootStart) * 5
+                    root.CFrame = BOSS_CHEST_LOOT_CFRAME * CFrame.new(math.cos(offsetAngle)*3, 0, math.sin(offsetAngle)*3)
                 end
-                return true
+                task.wait(0.1)
             end
+            return true
         end
-
-        local elapsed = os.clock() - started
-        setStatus(string.format("Breaking boss chest (%.1fs)", elapsed))
         task.wait(0.1)
     end
-
-    disconnectChestWatch()
     return false
 end
 
-local function getHugeSpawnKey(index, petId)
-    return tostring(game.JobId) .. ":" .. tostring(index) .. ":" .. tostring(petId)
-end
-
-local function alertHugeSpawn(index, petId, rareType)
-    local key = getHugeSpawnKey(index, petId)
-    if ALERTED_HUGE_SPAWNS[key] then return true end
-    ALERTED_HUGE_SPAWNS[key] = true
-
-    addLog("NEW HUGE SPAWN DETECTED: " .. tostring(petId))
-    if setStage then setStage("HUGE FOUND", "Sending Discord alert and starting catch") end
-
-    local title = (rareType or "HUGE") .. " SPAWNED!"
-    local description = "A new **" .. tostring(petId) .. "** spawned after the chest break."
-    local fields = {
-        { name = "Pet", value = tostring(petId), inline = true },
-        { name = "Player", value = player.Name, inline = true },
-        { name = "Server", value = string.sub(game.JobId, 1, 12), inline = true },
-        { name = "Mode", value = CONFIG.MODE, inline = true },
-    }
-
-    sendWebhook(title, description, WEBHOOK_COLORS.RED, fields)
-    return true
-end
-
-GUI_REF.notifyHugeCatchAttempt = function(index, petId, cubeName, attemptKind)
-    STATS.HugeCatchAttempts = (STATS.HugeCatchAttempts or 0) + 1
-    local attemptNumber = STATS.HugeCatchAttempts
-    sendWebhook("HUGE CATCH ATTEMPT #" .. tostring(attemptNumber), "Catching **" .. tostring(petId) .. "** with " .. tostring(cubeName), WEBHOOK_COLORS.ORANGE, {
-        { name = "Pet", value = tostring(petId), inline = true },
-        { name = "Cube", value = tostring(cubeName), inline = true },
-    })
-    return attemptNumber
-end
-
-GUI_REF.notifyHugeCatchRequestResult = function(attemptNumber, index, petId, cubeName, invokeOk, accepted)
-    local requestAccepted = invokeOk and accepted ~= false and accepted ~= nil
-    local title = requestAccepted and "HUGE CATCH ACCEPTED" or "HUGE CATCH FAILED"
-    sendWebhook(title, "Remote result for **" .. tostring(petId) .. "**: " .. tostring(accepted), requestAccepted and WEBHOOK_COLORS.BLUE or WEBHOOK_COLORS.RED)
-end
-
-GUI_REF.notifyHugeCatchVerification = function(attemptNumber, index, petId, cubeName, result)
-    sendWebhook("HUGE CATCH " .. tostring(result), "Result: " .. tostring(result) .. " for " .. tostring(petId), WEBHOOK_COLORS.RED)
-end
-
-local function snapshotPetUUIDs()
-    local known = {}
-    local data = Save and Save.Get()
-    local petInv = data and data.Inventory and data.Inventory.Pet or {}
-    for uuid in pairs(petInv) do known[uuid] = true end
-    return known
-end
-
-local function targetStillRoaming(index, petId)
-    local data = Save and Save.Get()
-    local roaming = data and data.RoamingPets or {}
-    local entry = roaming[index]
-    return entry ~= nil and getRoamingPetId(entry) == petId
-end
-
-local function confirmCatchResult(beforeUUIDs, index, petId, requireHuge)
-    local deadline = os.clock() + CATCH_CONFIRM_TIMEOUT
-    local disappeared = false
-
-    repeat
-        local data = Save and Save.Get()
-        local petInv = data and data.Inventory and data.Inventory.Pet or {}
-
-        for uuid, petData in pairs(petInv) do
-            if not beforeUUIDs[uuid] and type(petData) == "table" then
-                local newPetId = tostring(petData.id or "")
-                local isHuge = isHugeInventoryPet(petData)
-                if newPetId == tostring(petId) or (requireHuge and isHuge) then
-                    KNOWN_PET_UUIDS[uuid] = true
-                    return "CAUGHT", uuid, newPetId
-                end
-            end
-        end
-
-        if not targetStillRoaming(index, petId) then disappeared = true end
-        task.wait(0.15)
-    until os.clock() >= deadline or not CONFIG.RUNNING
-
-    if disappeared then return "ESCAPED" end
-    return "UNCONFIRMED"
-end
-
--- Enhanced Huge catch logic: Teleports directly onto Huge model and throws cubes rapidly
 local function waitForHuge(seconds)
-    local waitSeconds = math.max(0.25, tonumber(seconds) or HUGE_SPAWN_WAIT)
-    local deadline = os.clock() + waitSeconds
-
-    addLog(string.format("Chest confirmed broken; scanning for Huge spawns (%.1fs)", waitSeconds))
-
+    local deadline = os.clock() + math.max(0.5, tonumber(seconds) or HUGE_SPAWN_WAIT)
     repeat
-        holdPlayerAt(BOSS_CHEST_LOOT_CFRAME)
-        local hugeIndex, hugePetId, hugeIsRare, hugeRareType = findRarePetOnly()
-
+        local hugeIndex, hugePetId, hugeIsRare, hugeRareType, hugeEntry = findRarePetOnly()
         if hugeIndex and hugeIsRare then
-            addLog("HUGE SPAWN LOCATED: " .. tostring(hugePetId))
-            alertHugeSpawn(hugeIndex, hugePetId, hugeRareType)
-            return hugeIndex, hugePetId, hugeIsRare, hugeRareType
+            addLog("HUGE DETECTED POST-CHEST: " .. tostring(hugePetId))
+            return hugeIndex, hugePetId, hugeIsRare, hugeRareType, hugeEntry
         end
-
-        local remaining = math.max(0, deadline - os.clock())
-        if setStage then setStage("HUGE CHECK", string.format("Scanning post-chest spawn • %.1fs", remaining)) end
         task.wait(0.2)
     until os.clock() >= deadline or not CONFIG.RUNNING
-
     return findRarePetOnly()
 end
 
@@ -2410,96 +868,55 @@ task.spawn(function()
         if not CONFIG.RUNNING then setStatus("Paused"); task.wait(0.5); continue end
 
         goToElementalRealm()
-        local index, petId, isRareTarget, rareType
+        local index, petId, isRareTarget, rareType, targetEntry
 
-        if CONFIG.MODE == "HUGE" then
-            if not HUGE_SERVER_SHOP_DONE then
-                visitShopAndBuy(nil)
-                HUGE_SERVER_SHOP_DONE = true
-            end
+        local shopInterval = tonumber(CONFIG.SHOP_INTERVAL) or 30
+        if CONFIG.AUTO_RESTOCK and (os.clock() - LAST_QUEST_SHOP_VISIT) >= shopInterval then
+            LAST_QUEST_SHOP_VISIT = os.clock()
+            visitShopAndBuy(FARM_ZONE_CFRAME)
+        end
 
-            movePlayer(BOSS_CHEST_CFRAME, "Going to boss chest")
-            local bossChest = waitForBossChest(CHEST_LOAD_TIMEOUT)
+        local bossChest = CONFIG.AUTO_BREAK and checkForBossChest() or nil
+        if bossChest and breakBossChest(bossChest) then
+            index, petId, isRareTarget, rareType, targetEntry = waitForHuge(HUGE_SPAWN_WAIT)
+        end
 
-            if not bossChest then
-                index, petId, isRareTarget, rareType = findRarePetOnly()
-                if not index then
-                    addLog("No boss chest or Huge found; hopping...")
-                    pcall(serverHop)
-                    task.wait(5)
-                    continue
-                end
+        if not index then
+            if not ensureQuestData() then setStatus("Getting quest data"); task.wait(1); continue end
+            if questComplete() then setStatus("Quest complete! Redeeming reward"); redeem(); task.wait(2); continue end
+            index, petId, isRareTarget, rareType, targetEntry = chooseTarget()
+        end
+
+        -- Handle case where NO quest pets match active goals:
+        if not index then
+            local rerollIndex, rerollPetId, _, _, rerollEntry = findEasiestPet()
+            if rerollIndex then
+                index = rerollIndex
+                petId = rerollPetId
+                isRareTarget = false
+                rareType = "REROLL"
+                targetEntry = rerollEntry
+                addLog("No quest pet active; catching easiest pet to refresh spawns: " .. tostring(rerollPetId))
+                setStatus("Rerolling easiest pet: " .. tostring(rerollPetId))
             else
-                if not breakBossChest(bossChest) then task.wait(1); continue end
-                index, petId, isRareTarget, rareType = waitForHuge(HUGE_SPAWN_WAIT)
-                if not index then
-                    addLog("No Huge spawned after chest break; hopping...")
-                    pcall(serverHop)
-                    task.wait(5)
-                    continue
-                end
-            end
-        else
-            -- QUEST MODE: Enforce user configurable shop interval (default 30s)
-            local shopInterval = tonumber(CONFIG.SHOP_INTERVAL) or 30
-            if CONFIG.AUTO_RESTOCK and (os.clock() - LAST_QUEST_SHOP_VISIT) >= shopInterval then
-                LAST_QUEST_SHOP_VISIT = os.clock()
-                visitShopAndBuy(FARM_ZONE_CFRAME)
-            end
-
-            local bossChest = CONFIG.AUTO_BREAK and checkForBossChest() or nil
-            if bossChest and breakBossChest(bossChest) then
-                index, petId, isRareTarget, rareType = waitForHuge(HUGE_SPAWN_WAIT)
-            end
-
-            if not index then
-                if not ensureQuestData() then setStatus("Getting quest data"); task.wait(1); continue end
-                if questComplete() then setStatus("Quest complete, redeeming reward"); redeem(); task.wait(2); continue end
-                index, petId, isRareTarget, rareType = chooseTarget()
-            end
-
-            if not index then
-                local rerollIndex, rerollPetId = findEasiestPet()
-                if rerollIndex then
-                    index = rerollIndex
-                    petId = rerollPetId
-                    isRareTarget = false
-                    rareType = "REROLL"
-                    addLog("Quest target missing; rerolling easiest pet: " .. tostring(rerollPetId))
-                    setStatus("Rerolling easiest pet: " .. tostring(rerollPetId))
-                else
-                    addLog("No roaming pets available; staying in server")
-                    setStatus("Waiting for pet spawns...")
-                    task.wait(3)
-                    continue
-                end
+                -- Handle case where 0 roaming pets exist at all:
+                addLog("No roaming pets in zone; waiting for server spawn...")
+                setStatus("Waiting for roaming pet spawns...")
+                task.wait(3)
+                continue
             end
         end
 
         if not index then task.wait(1); continue end
 
-        -- Determine Cube Type
         local targetCubeName = "Pet Cube"
         if isRareTarget then
-            local ultraCount = getCubeCount(true)
-            if ultraCount > 0 then
-                targetCubeName = "Ultra Pet Cube"
-                addLog("Selected Ultra Pet Cube for " .. tostring(petId))
-            else
-                addLog("Selected Normal Pet Cube for " .. tostring(petId))
-            end
+            if getCubeCount(true) > 0 then targetCubeName = "Ultra Pet Cube" end
         elseif CONFIG.USE_ULTRA and getCubeCount(true) > 0 then
             targetCubeName = "Ultra Pet Cube"
         end
 
-        local cubeCount = getCubeCount(targetCubeName == "Ultra Pet Cube")
-        if cubeCount < 1 then
-            setStatus("Out of " .. targetCubeName .. "s - waiting for restock...")
-            task.wait(2)
-            continue
-        end
-
-        -- Teleport directly to pet model position before throwing cube (Crucial for Huge catches)
+        -- Teleport directly onto the pet model (crucial for Huge catches)
         pcall(function()
             local things = workspace:FindFirstChild("__THINGS")
             local roamingFolder = things and things:FindFirstChild("RoamingPets")
@@ -2509,8 +926,7 @@ task.spawn(function()
                         local root = getRootPart()
                         if root then
                             root.CFrame = model:GetPivot()
-                            addLog("Teleported directly to pet model: " .. tostring(model.Name))
-                            task.wait(0.2)
+                            task.wait(0.15)
                         end
                         break
                     end
@@ -2518,55 +934,23 @@ task.spawn(function()
             end
         end)
 
-        if isRareTarget then
-            setStatus("THROWING " .. targetCubeName .. " AT HUGE: " .. tostring(petId) .. "!")
-            alertHugeSpawn(index, petId, rareType)
-        else
-            setStatus("Throwing " .. targetCubeName .. " at " .. tostring(petId))
-        end
+        setStatus("Throwing " .. targetCubeName .. " at " .. tostring(petId))
 
-        local beforePetUUIDs = snapshotPetUUIDs()
-        local hugeAttemptNumber = nil
+        -- Execute Multi-Signature Catch Remote
+        local ok, accepted = invokeCatchRemote(targetCubeName, index, targetEntry)
 
-        if isRareTarget then
-            hugeAttemptNumber = GUI_REF.notifyHugeCatchAttempt(index, petId, targetCubeName, "Primary")
-        end
-
-        -- Throw Catch Remote
-        local ok, accepted = pcall(function()
-            return ClientNetwork.Invoke("RoamingPets_CatchPet", targetCubeName, index)
-        end)
-
-        if isRareTarget then
-            GUI_REF.notifyHugeCatchRequestResult(hugeAttemptNumber, index, petId, targetCubeName, ok, accepted)
+        if not ok and isRareTarget and targetCubeName == "Ultra Pet Cube" and getCubeCount(false) > 0 then
+            addLog("Ultra cube invocation rejected; trying Normal Pet Cube fallback")
+            targetCubeName = "Pet Cube"
+            ok, accepted = invokeCatchRemote(targetCubeName, index, targetEntry)
         end
 
         if ok and accepted then
             STATS.CubesSpent = STATS.CubesSpent + 1
-            local result, newUuid = confirmCatchResult(beforePetUUIDs, index, petId, isRareTarget == true)
-
-            if result == "CAUGHT" then
-                STATS.PetsCaught = STATS.PetsCaught + 1
-                local catchMsg = (isRareTarget and "CAUGHT HUGE: " or "Caught ") .. tostring(petId)
-                addLog(catchMsg)
-                setStatus(catchMsg)
-                if newUuid then KNOWN_PET_UUIDS[newUuid] = true end
-
-                if isRareTarget then
-                    STATS.RareCatches = STATS.RareCatches + 1
-                    if newUuid then CAUGHT_RARE_UUIDS[newUuid] = true end
-                    sendWebhookReliable("HUGE PET CAUGHT!", "Caught **" .. tostring(petId) .. "**!", WEBHOOK_COLORS.GOLD, {
-                        { name = "Pet", value = tostring(petId), inline = true },
-                        { name = "Cube", value = targetCubeName, inline = true },
-                    })
-                end
-            elseif result == "ESCAPED" then
-                STATS.PetsEscaped = STATS.PetsEscaped + 1
-                setStatus(tostring(petId) .. " Escaped! (Total Escaped: " .. STATS.PetsEscaped .. ")")
-                addLog(tostring(petId) .. " Escaped! (Total Escaped: " .. STATS.PetsEscaped .. ")")
-            end
+            STATS.PetsCaught = STATS.PetsCaught + 1
+            addLog("Caught " .. tostring(petId) .. "!")
         else
-            setStatus("Catch request failed for " .. tostring(petId))
+            addLog("Catch remote unconfirmed for " .. tostring(petId))
         end
 
         task.wait(CATCH_DELAY)
@@ -2574,7 +958,4 @@ task.spawn(function()
 end)
 
 addLog("Elemental Quest Runner " .. VERSION .. " loaded!")
-addLog("Config: Shop Interval: " .. (CONFIG.SHOP_INTERVAL or 30) .. "s | Stay Duration: " .. (CONFIG.SHOP_STAY_DURATION or 10) .. "s")
-if CONFIG.RUNNING then setStage(CONFIG.MODE, CONFIG.MODE .. " mode active") else setStatus("Choose a mode to begin") end
-
 print("[EQR " .. VERSION .. "] Script loaded successfully!")
