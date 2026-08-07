@@ -33,7 +33,7 @@ if not Save or not ClientNetwork or not Directory then
     return
 end
 
-local VERSION = "v3.3.1"
+local VERSION = "v3.3.2"
 local QUEST_ID = "ElementalQuests"
 local CONFIG_FILE = "ElementalQuestRunner_Config.json"
 local SCRIPT_URL = "https://raw.githubusercontent.com/jaidin-dev/Ps99-scripts/refs/heads/main/AutoElementalQuest2.3v"
@@ -651,6 +651,51 @@ local function invokeCatchRemote(cubeName, index, entry)
     return false, nil
 end
 
+local function targetStillRoaming(index, petId)
+    local data = Save and Save.Get()
+    local roaming = data and data.RoamingPets or {}
+    local entry = roaming[index]
+    return entry ~= nil and getRoamingPetId(entry) == petId
+end
+
+-- Robust Catch Verification Engine: Checks Save.Get(), Roaming list disappearance, and Network events
+local function confirmCatchResult(beforeUUIDs, index, petId, requireHuge)
+    local deadline = os.clock() + CATCH_CONFIRM_TIMEOUT
+    local disappeared = false
+
+    repeat
+        local data = Save and Save.Get()
+        local petInv = data and data.Inventory and data.Inventory.Pet or {}
+
+        -- Check 1: Direct Inventory addition
+        for uuid, petData in pairs(petInv) do
+            if not beforeUUIDs[uuid] and type(petData) == "table" then
+                local newPetId = tostring(petData.id or "")
+                local isHuge = isHugeInventoryPet(petData)
+                if newPetId == tostring(petId) or (requireHuge and isHuge) or string.find(string.lower(newPetId), string.lower(tostring(petId)), 1, true) then
+                    KNOWN_PET_UUIDS[uuid] = true
+                    return "CAUGHT", uuid, newPetId
+                end
+            end
+        end
+
+        -- Check 2: Check if target pet left roaming list (successful catch or escape)
+        if not targetStillRoaming(index, petId) then
+            disappeared = true
+        end
+
+        task.wait(0.15)
+    until os.clock() >= deadline or not CONFIG.RUNNING
+
+    -- If the pet left the roaming list after a successful remote throw, mark as CAUGHT
+    if disappeared then
+        return "CAUGHT", nil, petId
+    end
+
+    -- Fallback: If pet remains in roaming list after timeout, it escaped
+    return "ESCAPED", nil, petId
+end
+
 local function getAvailableCubeSlots()
     local data = Save and Save.Get()
     local merchantSave = data and data.MerchantPurchases and data.MerchantPurchases.PetCubeStore
@@ -887,7 +932,6 @@ task.spawn(function()
             index, petId, isRareTarget, rareType, targetEntry = chooseTarget()
         end
 
-        -- Handle case where NO quest pets match active goals:
         if not index then
             local rerollIndex, rerollPetId, _, _, rerollEntry = findEasiestPet()
             if rerollIndex then
@@ -899,7 +943,6 @@ task.spawn(function()
                 addLog("No quest pet active; catching easiest pet to refresh spawns: " .. tostring(rerollPetId))
                 setStatus("Rerolling easiest pet: " .. tostring(rerollPetId))
             else
-                -- Handle case where 0 roaming pets exist at all:
                 addLog("No roaming pets in zone; waiting for server spawn...")
                 setStatus("Waiting for roaming pet spawns...")
                 task.wait(3)
@@ -916,7 +959,6 @@ task.spawn(function()
             targetCubeName = "Ultra Pet Cube"
         end
 
-        -- Teleport directly onto the pet model (crucial for Huge catches)
         pcall(function()
             local things = workspace:FindFirstChild("__THINGS")
             local roamingFolder = things and things:FindFirstChild("RoamingPets")
@@ -936,7 +978,7 @@ task.spawn(function()
 
         setStatus("Throwing " .. targetCubeName .. " at " .. tostring(petId))
 
-        -- Execute Multi-Signature Catch Remote
+        local snapshotBefore = snapshotPetUUIDs()
         local ok, accepted = invokeCatchRemote(targetCubeName, index, targetEntry)
 
         if not ok and isRareTarget and targetCubeName == "Ultra Pet Cube" and getCubeCount(false) > 0 then
@@ -947,10 +989,19 @@ task.spawn(function()
 
         if ok and accepted then
             STATS.CubesSpent = STATS.CubesSpent + 1
-            STATS.PetsCaught = STATS.PetsCaught + 1
-            addLog("Caught " .. tostring(petId) .. "!")
+            local catchResult, newUuid, caughtName = confirmCatchResult(snapshotBefore, index, petId, isRareTarget == true)
+
+            if catchResult == "CAUGHT" then
+                STATS.PetsCaught = STATS.PetsCaught + 1
+                addLog("CAUGHT: " .. tostring(caughtName or petId) .. " | Total Caught: " .. STATS.PetsCaught)
+                setStatus("Caught " .. tostring(caughtName or petId) .. "! Total: " .. STATS.PetsCaught)
+            else
+                STATS.PetsEscaped = STATS.PetsEscaped + 1
+                addLog("ESCAPED: " .. tostring(petId) .. " | Total Escaped: " .. STATS.PetsEscaped)
+                setStatus(tostring(petId) .. " Escaped!")
+            end
         else
-            addLog("Catch remote unconfirmed for " .. tostring(petId))
+            addLog("Catch remote failed for " .. tostring(petId))
         end
 
         task.wait(CATCH_DELAY)
