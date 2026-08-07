@@ -33,7 +33,7 @@ if not Save or not ClientNetwork or not Directory then
     return
 end
 
-local VERSION = "v3.3.2"
+local VERSION = "v3.3.3"
 local QUEST_ID = "ElementalQuests"
 local CONFIG_FILE = "ElementalQuestRunner_Config.json"
 local SCRIPT_URL = "https://raw.githubusercontent.com/jaidin-dev/Ps99-scripts/refs/heads/main/AutoElementalQuest2.3v"
@@ -243,134 +243,29 @@ local function addLog(msg)
     print("[EQR] " .. msg)
 end
 
-local TeleportService = game:GetService("TeleportService")
+local function goToElementalRealm()
+    local alreadyThere = false
+    pcall(function()
+        alreadyThere = MapCmds and MapCmds.GetCurrentZone and MapCmds.GetCurrentZone() == "Elemental Realm"
+    end)
+    if alreadyThere then return true end
 
-local function serverHop()
-    if IS_HOPPING then return false end
-    IS_HOPPING = true
-    rememberServerId(game.JobId)
+    if setStage then setStage("TRAVEL", "Going to Elemental Realm") else setStatus("Going to Elemental Realm") end
 
-    local hopReason = CONFIG.MODE == "HUGE" and "Chest checked; searching for a fresh server" or "Searching for a fresh server"
-    addLog(hopReason)
-    if setStage then setStage("SERVER HOP", "Scanning for an unvisited server") end
-
-    if sendWebhook and WEBHOOK_COLORS then
-        sendWebhook("Server Hopping", hopReason .. ".", WEBHOOK_COLORS.BLUE)
-    end
-
-    local placeId = game.PlaceId
-    local currentJobId = game.JobId
-
-    local function fetchServerPage(cursor)
-        local url = string.format("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100", placeId)
-        if cursor then url = url .. "&cursor=" .. HttpService:UrlEncode(cursor) end
-
-        local response
-        if game.HttpGet then
-            local ok, body = pcall(function() return game:HttpGet(url) end)
-            if ok then response = body end
-        end
-
-        if not response then
-            local reqFunc = (syn and syn.request) or (http and http.request) or http_request or request
-            if reqFunc and type(reqFunc) == "function" then
-                local ok, result = pcall(function() return reqFunc({ Url = url, Method = "GET" }) end)
-                if ok and result then response = result.Body or result.body end
-            end
-        end
-
-        if not response or response == "" then return nil end
-        local decodeOk, decoded = pcall(function() return HttpService:JSONDecode(response) end)
-        return decodeOk and decoded or nil
-    end
-
-    local freshServerIds = {}
-    local recentCandidates = {}
-    local cursor = nil
-    local pagesChecked = 0
-
-    repeat
-        local page = fetchServerPage(cursor)
-        if not page then break end
-        pagesChecked = pagesChecked + 1
-
-        for _, server in ipairs(page.data or {}) do
-            local serverId = server.id
-            local playing = tonumber(server.playing) or 0
-            local maxPlayers = tonumber(server.maxPlayers) or 0
-
-            if serverId and serverId ~= currentJobId and playing < maxPlayers then
-                if isRecentServer(serverId) then
-                    table.insert(recentCandidates, serverId)
-                else
-                    table.insert(freshServerIds, serverId)
-                end
-            end
-        end
-        cursor = page.nextPageCursor
-    until #freshServerIds > 0 or not cursor or pagesChecked >= SERVER_SCAN_PAGE_LIMIT
-
-    if #freshServerIds == 0 and #recentCandidates > 0 then
-        local expireCount = math.min(10, math.floor(#SERVER_HISTORY / 2))
-        for _ = 1, expireCount do table.remove(SERVER_HISTORY, 1) end
-        syncServerHistorySession()
-        for _, serverId in ipairs(recentCandidates) do
-            if not isRecentServer(serverId) then table.insert(freshServerIds, serverId) end
-        end
-    end
-
-    if #freshServerIds == 0 then
-        addLog("No unvisited joinable server found; staying here and retrying")
-        IS_HOPPING = false
-        return false
-    end
-
-    local selectedServer = freshServerIds[math.random(1, #freshServerIds)]
-    rememberServerId(selectedServer)
-    addLog(string.format("Found %d fresh server(s); joining %s", #freshServerIds, string.sub(selectedServer, 1, 8)))
-
-    local ok, err = pcall(function()
-        TeleportService:TeleportToPlaceInstance(placeId, selectedServer, player)
+    local teleported = false
+    pcall(function()
+        if MapCmds and MapCmds.Teleport then MapCmds.Teleport("Elemental Realm"); teleported = true end
     end)
 
-    IS_HOPPING = false
-    return ok
-end
-
-local function loadConfig()
-    local isFileFunc = isfile or (syn and syn.isfile)
-    local readFileFunc = readfile or (syn and syn.readfile)
-    if isFileFunc and readFileFunc then
-        pcall(function()
-            if isFileFunc(CONFIG_FILE) then
-                local content = readFileFunc(CONFIG_FILE)
-                if content and content ~= "" then
-                    local data = HttpService:JSONDecode(content)
-                    if type(data) == "table" then
-                        for key, val in pairs(data) do
-                            if key ~= "MODE" and CONFIG[key] ~= nil then CONFIG[key] = val end
-                        end
-                    end
-                end
-            end
-        end)
+    if not teleported then
+        local character = player.Character
+        local root = character and character:FindFirstChild("HumanoidRootPart")
+        if root then root.CFrame = ELEMENTAL_REALM_CFRAME; teleported = true end
     end
-end
 
-local function saveConfig()
-    local writeFileFunc = writefile or (syn and syn.writefile)
-    if writeFileFunc then
-        pcall(function()
-            local persistentConfig = {}
-            for key, value in pairs(CONFIG) do
-                if key ~= "MODE" then persistentConfig[key] = value end
-            end
-            writeFileFunc(CONFIG_FILE, HttpService:JSONEncode(persistentConfig))
-        end)
-    end
+    task.wait(1.5)
+    return teleported
 end
-
-loadConfig()
 
 WEBHOOK_COLORS = {
     GREEN = 3066993, RED = 15158332, GOLD = 15844367, PURPLE = 10181046, ORANGE = 15105570, BLUE = 3447003, TEAL = 1752220, GRAY = 9807270,
@@ -508,11 +403,9 @@ local function isHugeInventoryPet(petData)
     return false, petId
 end
 
--- Reroll selector: Evaluates catch difficulty / chance and picks the EASIEST ones to get
 local function findEasiestPet()
     local data = Save and Save.Get()
     local roaming = data and data.RoamingPets or {}
-
     local bestIndex, bestPet, bestChance, bestEntry = nil, nil, math.huge, nil
 
     for index, entry in pairs(roaming) do
@@ -523,26 +416,19 @@ local function findEasiestPet()
         end
     end
 
-    if bestIndex then
-        return bestIndex, bestPet, false, nil, bestEntry
-    end
+    if bestIndex then return bestIndex, bestPet, false, nil, bestEntry end
     return nil, nil, false, nil, nil
 end
 
--- Quest target selector: Targets active quest pets (easiest catch rate first)
 local function chooseTarget()
     local data = Save and Save.Get()
     local roaming = data and data.RoamingPets or {}
 
-    -- Priority 1: Check for Huges / Rares
     for index, entry in pairs(roaming) do
         local isRare, rareName, rareType = isRarePet(entry)
-        if isRare then
-            return index, rareName, true, rareType, entry
-        end
+        if isRare then return index, rareName, true, rareType, entry end
     end
 
-    -- Priority 2: Match active quest goals, picking the easiest ones first
     local targets = getRequiredPets()
     local bestIndex, bestPet, bestChance, bestEntry = nil, nil, math.huge, nil
 
@@ -556,14 +442,10 @@ local function chooseTarget()
         end
     end
 
-    if bestIndex then
-        return bestIndex, bestPet, false, nil, bestEntry
-    end
-
+    if bestIndex then return bestIndex, bestPet, false, nil, bestEntry end
     return nil, nil, false, nil, nil
 end
 
--- Scanner checking both roaming data AND physical workspace models
 local function findRarePetOnly()
     local data = Save and Save.Get()
     local roaming = data and data.RoamingPets or {}
@@ -573,7 +455,7 @@ local function findRarePetOnly()
         if isRare then return index, rareName, true, rareType, entry end
     end
 
-    local fallbackIndex, fallbackName, fallbackRare, fallbackType, fallbackEntry
+    local fallbackIndex, fallbackName, fallbackRare, fallbackType
     pcall(function()
         local things = workspace:FindFirstChild("__THINGS")
         local roamingFolder = things and things:FindFirstChild("RoamingPets")
@@ -595,7 +477,7 @@ local function findRarePetOnly()
         end
     end)
     
-    if fallbackRare then return fallbackIndex, fallbackName, fallbackRare, fallbackType, fallbackEntry end
+    if fallbackRare then return fallbackIndex, fallbackName, fallbackRare, fallbackType, nil end
     return nil, nil, false, nil, nil
 end
 
@@ -613,29 +495,22 @@ local function redeem()
     return false
 end
 
--- Robust Catch Remote Invocation with Multi-Signature Fallbacks
 local function invokeCatchRemote(cubeName, index, entry)
-    -- Attempt 1: Raw index
-    local ok, res = pcall(function()
-        return ClientNetwork.Invoke("RoamingPets_CatchPet", cubeName, index)
-    end)
+    local ok, res = pcall(function() return ClientNetwork.Invoke("RoamingPets_CatchPet", cubeName, index) end)
     if ok and res ~= false and res ~= nil then return true, res end
 
-    -- Attempt 2: Numeric index
     if type(index) == "string" and tonumber(index) then
         local numIdx = tonumber(index)
         ok, res = pcall(function() return ClientNetwork.Invoke("RoamingPets_CatchPet", cubeName, numIdx) end)
         if ok and res ~= false and res ~= nil then return true, res end
     end
 
-    -- Attempt 3: String index
     if type(index) == "number" then
         local strIdx = tostring(index)
         ok, res = pcall(function() return ClientNetwork.Invoke("RoamingPets_CatchPet", cubeName, strIdx) end)
         if ok and res ~= false and res ~= nil then return true, res end
     end
 
-    -- Attempt 4: Entry object properties
     if type(entry) == "table" then
         if entry.Index then
             ok, res = pcall(function() return ClientNetwork.Invoke("RoamingPets_CatchPet", cubeName, entry.Index) end)
@@ -647,7 +522,6 @@ local function invokeCatchRemote(cubeName, index, entry)
             if ok and res ~= false and res ~= nil then return true, res end
         end
     end
-
     return false, nil
 end
 
@@ -658,7 +532,14 @@ local function targetStillRoaming(index, petId)
     return entry ~= nil and getRoamingPetId(entry) == petId
 end
 
--- Robust Catch Verification Engine: Checks Save.Get(), Roaming list disappearance, and Network events
+local function snapshotPetUUIDs()
+    local known = {}
+    local data = Save and Save.Get()
+    local petInv = data and data.Inventory and data.Inventory.Pet or {}
+    for uuid in pairs(petInv) do known[uuid] = true end
+    return known
+end
+
 local function confirmCatchResult(beforeUUIDs, index, petId, requireHuge)
     local deadline = os.clock() + CATCH_CONFIRM_TIMEOUT
     local disappeared = false
@@ -667,7 +548,6 @@ local function confirmCatchResult(beforeUUIDs, index, petId, requireHuge)
         local data = Save and Save.Get()
         local petInv = data and data.Inventory and data.Inventory.Pet or {}
 
-        -- Check 1: Direct Inventory addition
         for uuid, petData in pairs(petInv) do
             if not beforeUUIDs[uuid] and type(petData) == "table" then
                 local newPetId = tostring(petData.id or "")
@@ -679,20 +559,11 @@ local function confirmCatchResult(beforeUUIDs, index, petId, requireHuge)
             end
         end
 
-        -- Check 2: Check if target pet left roaming list (successful catch or escape)
-        if not targetStillRoaming(index, petId) then
-            disappeared = true
-        end
-
+        if not targetStillRoaming(index, petId) then disappeared = true end
         task.wait(0.15)
     until os.clock() >= deadline or not CONFIG.RUNNING
 
-    -- If the pet left the roaming list after a successful remote throw, mark as CAUGHT
-    if disappeared then
-        return "CAUGHT", nil, petId
-    end
-
-    -- Fallback: If pet remains in roaming list after timeout, it escaped
+    if disappeared then return "CAUGHT", nil, petId end
     return "ESCAPED", nil, petId
 end
 
@@ -735,7 +606,7 @@ end
 local function movePlayer(targetCFrame, statusText)
     local root = getRootPart()
     if not root or not targetCFrame then return false end
-    if statusText then setStatus(statusText) end
+    if statusText and setStatus then setStatus(statusText) end
     root.CFrame = targetCFrame
     task.wait(0.5)
     return true
@@ -809,6 +680,7 @@ local function autoBreakChests()
     end)
 end
 
+-- GUI CONSTRUCTION
 local old = playerGui:FindFirstChild("EQR_Pro")
 if old then old:Destroy() end
 
@@ -819,7 +691,9 @@ local PH = mobile and 470 or 610
 local FS = mobile and 10 or 12
 local FT = mobile and 12 or 14
 
-local THEME = { Background = Color3.fromRGB(13, 15, 24), Surface = Color3.fromRGB(23, 27, 43), Accent = Color3.fromRGB(104, 92, 255), Text = Color3.fromRGB(241, 244, 255), Muted = Color3.fromRGB(157, 168, 198) }
+local THEME = {
+    Background = Color3.fromRGB(13, 15, 24), Surface = Color3.fromRGB(23, 27, 43), Accent = Color3.fromRGB(104, 92, 255), Text = Color3.fromRGB(241, 244, 255), Muted = Color3.fromRGB(157, 168, 198), Success = Color3.fromRGB(76, 220, 130)
+}
 
 local function addCorner(obj, radius) local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, radius or 8); c.Parent = obj; return c end
 local function addStroke(obj, color, thickness) local s = Instance.new("UIStroke"); s.Color = color or Color3.fromRGB(88, 101, 242); s.Thickness = thickness or 1; s.Parent = obj; return s end
@@ -833,6 +707,9 @@ addCorner(titleBar, 14)
 
 local titleLabel = Instance.new("TextLabel"); titleLabel.Size = UDim2.new(0, 260, 1, 0); titleLabel.Position = UDim2.fromOffset(24, 0); titleLabel.BackgroundTransparency = 1; titleLabel.Text = "Quest Runner " .. VERSION; titleLabel.TextColor3 = THEME.Text; titleLabel.Font = Enum.Font.GothamBold; titleLabel.TextSize = FT; titleLabel.Parent = titleBar
 
+local minBtn = Instance.new("TextButton"); minBtn.Size = UDim2.fromOffset(28, 24); minBtn.Position = UDim2.new(1, -72, 0.5, -12); minBtn.BackgroundColor3 = Color3.fromRGB(45, 50, 75); minBtn.Text = "-"; minBtn.TextColor3 = Color3.new(1, 1, 1); minBtn.Font = Enum.Font.GothamBold; minBtn.Parent = titleBar
+addCorner(minBtn, 4)
+
 local closeBtn = Instance.new("TextButton"); closeBtn.Size = UDim2.fromOffset(28, 24); closeBtn.Position = UDim2.new(1, -38, 0.5, -12); closeBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50); closeBtn.Text = "x"; closeBtn.TextColor3 = Color3.new(1, 1, 1); closeBtn.Font = Enum.Font.GothamBold; closeBtn.Parent = titleBar
 addCorner(closeBtn, 4)
 closeBtn.MouseButton1Click:Connect(function() CONFIG.RUNNING = false; saveConfig(); gui:Destroy() end)
@@ -840,9 +717,10 @@ closeBtn.MouseButton1Click:Connect(function() CONFIG.RUNNING = false; saveConfig
 statusFooter = Instance.new("Frame"); statusFooter.Size = UDim2.new(1, -20, 0, 34); statusFooter.Position = UDim2.new(0, 10, 1, -40); statusFooter.BackgroundColor3 = THEME.Surface; statusFooter.Parent = panel
 addCorner(statusFooter, 8)
 
-statusLabel = Instance.new("TextLabel"); statusLabel.Size = UDim2.new(1, -16, 1, 0); statusLabel.Position = UDim2.fromOffset(8, 0); statusLabel.BackgroundTransparency = 1; statusLabel.Text = "Status: Initializing..."; statusLabel.TextColor3 = Color3.fromRGB(138, 230, 166); statusLabel.Font = Enum.Font.GothamMedium; statusLabel.TextSize = FS; statusLabel.Parent = statusFooter
+local statusLabel = Instance.new("TextLabel"); statusLabel.Size = UDim2.new(1, -16, 1, 0); statusLabel.Position = UDim2.fromOffset(8, 0); statusLabel.BackgroundTransparency = 1; statusLabel.Text = "Status: Running..."; statusLabel.TextColor3 = Color3.fromRGB(138, 230, 166); statusLabel.Font = Enum.Font.GothamMedium; statusLabel.TextSize = FS; statusLabel.Parent = statusFooter
+GUI_REF.statusLabel = statusLabel
 
-setStatus = function(msg) if statusLabel then statusLabel.Text = "Status: " .. tostring(msg) end end
+setStatus = function(msg) if statusLabel and statusLabel.Parent then statusLabel.Text = "Status: " .. tostring(msg) end end
 setStage = function(stageName, detail) setStatus(tostring(stageName) .. " - " .. tostring(detail)) end
 
 CONFIG.RUNNING = true
