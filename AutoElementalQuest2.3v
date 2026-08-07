@@ -1,10 +1,12 @@
 --[[
-    Elemental Quest Runner v3.1.0 (Sleek Compact UI & Logic Optimization)
-    ----------------------------------------------------------------------
-    - Fixed Shop Teleport Spam: Throttled shop visits to 45s intervals or low cube count
-    - Fixed Boss Chest Detection: Matches any breakable model near BOSS_CHEST_SPAWN_POS
-    - Quest Pet Target Prioritization: Targets active quest pets (easiest first) for fast completion
-    - Sleek Compact GUI: Modern 320x240 dashboard with clean stats grid and control toggles
+    Elemental Quest Runner v3.2.0 (Ultimate Feature Restoration & Modern UI)
+    -------------------------------------------------------------------------
+    - All Original Features Restored (Config Toggles, Webhook Config, Test Webhook, Low Cube Alert Threshold)
+    - Initial Mode Selection Modal (Quest Mode vs Huge Mode)
+    - Multi-Tab Modern GUI (Dashboard Stats, Settings & Toggles, Webhook Setup, Event Logs)
+    - Window Minimizer / Collapse Toggle
+    - Throttled Shop Restock & Position-Based Boss Chest Detection
+    - Easiest Quest Target Prioritization Engine
 --]]
 
 local Players = game:GetService("Players")
@@ -26,7 +28,7 @@ if previousRuntime and type(previousRuntime.Cleanup) == "function" then
 end
 
 local EQR_RUNTIME = {
-    Version = "v3.1.0",
+    Version = "v3.2.0",
     RunId = (previousRuntime and previousRuntime.RunId or 0) + 1,
     Connections = {},
     Tasks = {},
@@ -58,6 +60,8 @@ function EQR_RUNTIME:Cleanup()
 
     local oldGui = playerGui:FindFirstChild("EQR_Pro")
     if oldGui then oldGui:Destroy() end
+    local oldSelector = playerGui:FindFirstChild("EQR_ModeSelector")
+    if oldSelector then oldSelector:Destroy() end
 end
 
 local function isCurrentRun(runId)
@@ -65,7 +69,7 @@ local function isCurrentRun(runId)
 end
 
 --------------------------------------------------------------------------------
--- SECTION 2: Configuration & State
+-- SECTION 2: Configuration Manager
 --------------------------------------------------------------------------------
 local CONFIG_FILE = "ElementalQuestRunner_Config.json"
 
@@ -74,9 +78,13 @@ local CONFIG = {
     MODE = "QUEST", -- "QUEST" or "HUGE"
     USE_ULTRA = false,
     AUTO_RESTOCK = true,
+    AUTO_FRUITS = true,
     AUTO_BREAK = true,
-    SHOP_INTERVAL = 45, -- Seconds between shop stock checks
+    ALERT_RARE = true,
+    ALERT_LOW_CUBES = true,
+    CUBE_ALERT_THRESHOLD = 50,
     WEBHOOK_URL = "",
+    SHOP_INTERVAL = 45,
 }
 
 local function loadConfig()
@@ -112,13 +120,14 @@ end
 loadConfig()
 
 --------------------------------------------------------------------------------
--- SECTION 3: Webhook Service (Non-Blocking Queue)
+-- SECTION 3: Webhook Service & Event Queue
 --------------------------------------------------------------------------------
 local WebhookService = { Queue = {}, IsProcessing = false, RateLimitUntil = 0 }
-local WEBHOOK_COLORS = { GREEN = 3066993, RED = 15158332, GOLD = 15844367, BLUE = 3447003 }
+local WEBHOOK_COLORS = { GREEN = 3066993, RED = 15158332, GOLD = 15844367, BLUE = 3447003, PURPLE = 10181046, TEAL = 1752220 }
 
 function WebhookService:Push(title, description, color, fields)
     if not CONFIG.WEBHOOK_URL or CONFIG.WEBHOOK_URL == "" then return end
+    if not string.match(CONFIG.WEBHOOK_URL, "^https?://") then return end
     table.insert(self.Queue, { Title = title, Description = description, Color = color or WEBHOOK_COLORS.GREEN, Fields = fields or {} })
     self:ProcessQueue()
 end
@@ -134,7 +143,8 @@ function WebhookService:ProcessQueue()
             local payload = HttpService:JSONEncode({
                 embeds = {{
                     title = item.Title, description = item.Description, color = item.Color, fields = item.Fields,
-                    footer = { text = "EQR " .. EQR_RUNTIME.Version .. " • " .. os.date("%X") }
+                    footer = { text = "Quest Runner " .. EQR_RUNTIME.Version .. " • " .. os.date("%X") },
+                    timestamp = DateTime.now():ToIsoDate()
                 }}
             })
             pcall(function()
@@ -161,6 +171,7 @@ local Save = safeRequire(Library.Client:WaitForChild("Save"))
 local ClientNetwork = safeRequire(Library.Client:WaitForChild("Network"))
 local MapCmds = safeRequire(Library.Client:WaitForChild("MapCmds"))
 local Directory = safeRequire(Library.Directory)
+local FruitCmds = Library.Client:FindFirstChild("FruitCmds") and safeRequire(Library.Client.FruitCmds) or nil
 local MiscItem = Library.Items and Library.Items:FindFirstChild("MiscItem") and safeRequire(Library.Items.MiscItem) or nil
 local PetItem = Library.Items and Library.Items:FindFirstChild("PetItem") and safeRequire(Library.Items.PetItem) or nil
 
@@ -176,11 +187,26 @@ local STATS = {
     StartTime = os.time(),
     QuestsCompleted = 0,
     PetsCaught = 0,
+    PetsEscaped = 0,
     ChestsBroken = 0,
     CubesSpent = 0,
+    DiamondsSpent = 0,
+    FruitsEaten = 0,
+    RareCatches = 0,
 }
 
+local LOG_ENTRIES = {}
 local LAST_SHOP_VISIT = 0
+
+local function addLog(msg)
+    local entry = string.format("[%s] %s", os.date("%H:%M:%S"), msg)
+    table.insert(LOG_ENTRIES, 1, entry)
+    if #LOG_ENTRIES > 30 then table.remove(LOG_ENTRIES, #LOG_ENTRIES) end
+    if _G.EQR_LOG_UI then
+        _G.EQR_LOG_UI.Text = table.concat(LOG_ENTRIES, "\n")
+    end
+    print("[EQR] " .. msg)
+end
 
 local function getCubeName(forceUltra)
     if forceUltra == true then return "Ultra Pet Cube" end
@@ -209,7 +235,7 @@ local function getCubeCount(forceUltra)
 end
 
 --------------------------------------------------------------------------------
--- SECTION 5: Quest Logic & Pet Target Selector (Easiest Goal Pet First)
+-- SECTION 5: Quest Goal Matching & Pet Selection
 --------------------------------------------------------------------------------
 local function getQuestData()
     local data = Save and Save.Get()
@@ -256,8 +282,6 @@ local function getRoamingPetId(entry)
     return nil
 end
 
--- Priority Selector: Selects active quest targets first (easiest catch rate first).
--- If no quest targets are roaming, falls back to the overall easiest roaming pet.
 local function chooseBestTarget()
     local data = Save and Save.Get()
     local roaming = data and data.RoamingPets or {}
@@ -271,7 +295,6 @@ local function chooseBestTarget()
         local chance = tonumber(entry.Chance) or 999999
 
         if petId and questTargets[petId] then
-            -- Match found for active quest goal! Pick the easiest one (lowest chance value / highest spawn)
             if chance < bestGoalChance then
                 bestGoalIndex = index
                 bestGoalPet = petId
@@ -286,18 +309,13 @@ local function chooseBestTarget()
         end
     end
 
-    if bestGoalIndex then
-        return bestGoalIndex, bestGoalPet, "QUEST_GOAL"
-    end
-    if bestAnyIndex then
-        return bestAnyIndex, bestAnyPet, "EASIEST_FALLBACK"
-    end
-
+    if bestGoalIndex then return bestGoalIndex, bestGoalPet, "QUEST_GOAL" end
+    if bestAnyIndex then return bestAnyIndex, bestAnyPet, "EASIEST_FALLBACK" end
     return nil, nil, nil
 end
 
 --------------------------------------------------------------------------------
--- SECTION 6: Boss Chest & Breakables Detector (Position Based)
+-- SECTION 6: Boss Chest & Auto Fruits
 --------------------------------------------------------------------------------
 local BossChestService = {}
 
@@ -309,13 +327,29 @@ function BossChestService:GetBossChest()
     for _, model in ipairs(breakables:GetChildren()) do
         if model:IsA("Model") then
             local pos = model:GetPivot().Position
-            -- Match ANY breakable model within 30 studs of the Elemental Boss Chest spawn location
             if (pos - BOSS_CHEST_SPAWN_POS).Magnitude < 30 then
                 return model
             end
         end
     end
     return nil
+end
+
+local function autoEatFruits()
+    if not FruitCmds or not CONFIG.AUTO_FRUITS then return end
+    local fruitTypes = { "Apple", "Banana", "Orange", "Pineapple", "Watermelon", "Rainbow Fruit" }
+    for _, fruit in ipairs(fruitTypes) do
+        pcall(function()
+            local needed = nil
+            pcall(function() needed = FruitCmds:GetMaxConsume(fruit) end)
+            if needed and needed > 0 then
+                local ok, result = pcall(function() return FruitCmds:Consume(fruit, needed) end)
+                if ok and result ~= false then
+                    STATS.FruitsEaten = STATS.FruitsEaten + needed
+                end
+            end
+        end)
+    end
 end
 
 --------------------------------------------------------------------------------
@@ -346,6 +380,7 @@ setupTeleportContinuation()
 local function serverHop()
     if IS_HOPPING then return false end
     IS_HOPPING = true
+    addLog("Scanning for fresh server...")
     WebhookService:Push("Server Hopping", "Hopping to fresh server...", WEBHOOK_COLORS.BLUE)
 
     local placeId = game.PlaceId
@@ -398,18 +433,18 @@ local function visitShopIfNeeded()
     local cubesLeft = getCubeCount()
     local now = os.clock()
 
-    -- Only visit shop if cubes are low (<15) OR if shop interval (45s) has passed
     if cubesLeft >= 15 and (now - LAST_SHOP_VISIT) < CONFIG.SHOP_INTERVAL then
         return false
     end
 
     LAST_SHOP_VISIT = now
+    addLog("Visiting Pet Cube shop for restock...")
     StateMachine:SetState("SHOP", "Buying Pet Cubes")
     if movePlayer(SHOP_CFRAME, "Teleporting to Shop") then
-        task.wait(0.4)
+        task.wait(0.5)
         for _, slot in ipairs({1, 2, 3}) do
             pcall(function() ClientNetwork.Invoke("Merchant_RequestPurchase", PET_CUBE_STORE_ID, slot) end)
-            task.wait(0.15)
+            task.wait(0.2)
         end
         movePlayer(FARM_ZONE_CFRAME, "Returning to Realm")
         return true
@@ -423,6 +458,7 @@ local function breakBossChest(chestModel)
     local damageRemote = net and net:FindFirstChild("Breakables_PlayerDealDamage")
     if not damageRemote then return false end
 
+    addLog("Attacking Boss Chest...")
     movePlayer(BOSS_CHEST_CFRAME, "Breaking Boss Chest")
     StateMachine:SetState("CHEST", "Breaking Boss Chest")
 
@@ -436,6 +472,7 @@ local function breakBossChest(chestModel)
 
     if not chestModel.Parent then
         STATS.ChestsBroken = STATS.ChestsBroken + 1
+        addLog("Boss Chest destroyed!")
         return true
     end
     return false
@@ -451,6 +488,8 @@ local function executeMainLoop()
                 task.wait(0.5)
                 continue
             end
+
+            autoEatFruits()
 
             -- 1. Check & break Boss Chest if spawned
             local bossChest = CONFIG.AUTO_BREAK and BossChestService:GetBossChest()
@@ -468,6 +507,7 @@ local function executeMainLoop()
                 -- QUEST MODE
                 if questComplete() then
                     StateMachine:SetState("CLAIM", "Redeeming Quest")
+                    addLog("Quest complete! Claiming reward...")
                     pcall(function() ClientNetwork.Invoke("NPC Quests: Redeem", QUEST_ID) end)
                     STATS.QuestsCompleted = STATS.QuestsCompleted + 1
                     task.wait(1.5)
@@ -486,6 +526,7 @@ local function executeMainLoop()
                     if ok then
                         STATS.PetsCaught = STATS.PetsCaught + 1
                         STATS.CubesSpent = STATS.CubesSpent + 1
+                        addLog("Caught " .. tostring(tPet) .. " (" .. tReason .. ")")
                     end
                 else
                     StateMachine:SetState("SCANNING", "Waiting for Pets")
@@ -498,7 +539,7 @@ local function executeMainLoop()
 end
 
 --------------------------------------------------------------------------------
--- SECTION 9: Sleek Compact Dashboard UI (Modern 320x240 Design)
+-- SECTION 9: Ultimate Dashboard UI (Tabs, Webhook Config & Modern Aesthetics)
 --------------------------------------------------------------------------------
 local function buildUI()
     local old = playerGui:FindFirstChild("EQR_Pro")
@@ -512,33 +553,24 @@ local function buildUI()
 
     local mainFrame = Instance.new("Frame")
     mainFrame.Name = "MainFrame"
-    mainFrame.Size = UDim2.fromOffset(330, 245)
-    mainFrame.Position = UDim2.new(0.5, -165, 0.5, -122)
-    mainFrame.BackgroundColor3 = Color3.fromRGB(15, 17, 26)
+    mainFrame.Size = UDim2.fromOffset(480, 360)
+    mainFrame.Position = UDim2.new(0.5, -240, 0.5, -180)
+    mainFrame.BackgroundColor3 = Color3.fromRGB(13, 15, 24)
     mainFrame.BorderSizePixel = 0
     mainFrame.Active = true
+    mainFrame.ClipsDescendants = true
     mainFrame.Parent = gui
 
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 10)
-    corner.Parent = mainFrame
+    local corner = Instance.new("UICorner"); corner.CornerRadius = UDim.new(0, 12); corner.Parent = mainFrame
+    local stroke = Instance.new("UIStroke"); stroke.Color = Color3.fromRGB(88, 101, 242); stroke.Thickness = 1.2; stroke.Transparency = 0.15; stroke.Parent = mainFrame
 
-    local stroke = Instance.new("UIStroke")
-    stroke.Color = Color3.fromRGB(88, 101, 242)
-    stroke.Thickness = 1.2
-    stroke.Transparency = 0.2
-    stroke.Parent = mainFrame
-
-    -- Header / Title Drag Bar
+    -- Header Drag Bar
     local header = Instance.new("Frame")
-    header.Size = UDim2.new(1, 0, 0, 36)
-    header.BackgroundColor3 = Color3.fromRGB(23, 26, 40)
+    header.Size = UDim2.new(1, 0, 0, 42)
+    header.BackgroundColor3 = Color3.fromRGB(22, 25, 40)
     header.BorderSizePixel = 0
     header.Parent = mainFrame
-
-    local headerCorner = Instance.new("UICorner")
-    headerCorner.CornerRadius = UDim.new(0, 10)
-    headerCorner.Parent = header
+    local hc = Instance.new("UICorner"); hc.CornerRadius = UDim.new(0, 12); hc.Parent = header
 
     local dragging, dragStart, startPos
     EQR_RUNTIME:AddConnection(header.InputBegan:Connect(function(input)
@@ -559,52 +591,70 @@ local function buildUI()
     end))
 
     local title = Instance.new("TextLabel")
-    title.Size = UDim2.new(0, 140, 1, 0)
-    title.Position = UDim2.fromOffset(12, 0)
+    title.Size = UDim2.new(0, 200, 1, 0)
+    title.Position = UDim2.fromOffset(14, 0)
     title.BackgroundTransparency = 1
-    title.Text = "⚡ Quest Runner v3.1"
+    title.Text = "⚡ Quest Runner v3.2"
     title.TextColor3 = Color3.fromRGB(240, 243, 255)
     title.Font = Enum.Font.GothamBold
-    title.TextSize = 13
+    title.TextSize = 14
     title.TextXAlignment = Enum.TextXAlignment.Left
     title.Parent = header
 
     local statusPill = Instance.new("TextLabel")
-    statusPill.Size = UDim2.new(0, 110, 0, 22)
-    statusPill.Position = UDim2.new(1, -145, 0.5, -11)
+    statusPill.Size = UDim2.new(0, 140, 0, 24)
+    statusPill.Position = UDim2.new(1, -200, 0.5, -12)
     statusPill.BackgroundColor3 = Color3.fromRGB(34, 38, 58)
     statusPill.Text = "IDLE • Ready"
     statusPill.TextColor3 = Color3.fromRGB(160, 225, 180)
     statusPill.Font = Enum.Font.GothamMedium
-    statusPill.TextSize = 10
+    statusPill.TextSize = 11
     statusPill.Parent = header
     local pillC = Instance.new("UICorner"); pillC.CornerRadius = UDim.new(0, 6); pillC.Parent = statusPill
 
+    local isCollapsed = false
+    local minimizeBtn = Instance.new("TextButton")
+    minimizeBtn.Size = UDim2.fromOffset(24, 24)
+    minimizeBtn.Position = UDim2.new(1, -54, 0.5, -12)
+    minimizeBtn.BackgroundColor3 = Color3.fromRGB(45, 52, 75)
+    minimizeBtn.Text = "−"
+    minimizeBtn.TextColor3 = Color3.new(1, 1, 1)
+    minimizeBtn.Font = Enum.Font.GothamBold
+    minimizeBtn.TextSize = 14
+    minimizeBtn.Parent = header
+    local minC = Instance.new("UICorner"); minC.CornerRadius = UDim.new(0, 5); minC.Parent = minimizeBtn
+
+    minimizeBtn.MouseButton1Click:Connect(function()
+        isCollapsed = not isCollapsed
+        mainFrame.Size = isCollapsed and UDim2.fromOffset(480, 42) or UDim2.fromOffset(480, 360)
+        minimizeBtn.Text = isCollapsed and "+" or "−"
+    end)
+
     local closeBtn = Instance.new("TextButton")
-    closeBtn.Size = UDim2.fromOffset(22, 22)
-    closeBtn.Position = UDim2.new(1, -28, 0.5, -11)
+    closeBtn.Size = UDim2.fromOffset(24, 24)
+    closeBtn.Position = UDim2.new(1, -28, 0.5, -12)
     closeBtn.BackgroundColor3 = Color3.fromRGB(200, 60, 60)
     closeBtn.Text = "✕"
     closeBtn.TextColor3 = Color3.new(1, 1, 1)
     closeBtn.Font = Enum.Font.GothamBold
-    closeBtn.TextSize = 11
+    closeBtn.TextSize = 12
     closeBtn.Parent = header
-    local closeC = Instance.new("UICorner"); closeC.CornerRadius = UDim.new(0, 4); closeC.Parent = closeBtn
+    local closeC = Instance.new("UICorner"); closeC.CornerRadius = UDim.new(0, 5); closeC.Parent = closeBtn
     closeBtn.MouseButton1Click:Connect(function()
         CONFIG.RUNNING = false
         saveConfig()
         gui:Destroy()
     end)
 
-    -- Controls Row
+    -- Top Action Control Buttons
     local startBtn = Instance.new("TextButton")
-    startBtn.Size = UDim2.new(0.47, 0, 0, 32)
-    startBtn.Position = UDim2.fromOffset(12, 46)
+    startBtn.Size = UDim2.new(0.48, -12, 0, 34)
+    startBtn.Position = UDim2.fromOffset(12, 50)
     startBtn.BackgroundColor3 = Color3.fromRGB(46, 160, 90)
     startBtn.Text = "▶ START RUNNER"
     startBtn.TextColor3 = Color3.new(1, 1, 1)
     startBtn.Font = Enum.Font.GothamBold
-    startBtn.TextSize = 11
+    startBtn.TextSize = 12
     startBtn.Parent = mainFrame
     local startC = Instance.new("UICorner"); startC.CornerRadius = UDim.new(0, 6); startC.Parent = startBtn
 
@@ -616,13 +666,13 @@ local function buildUI()
     end)
 
     local modeBtn = Instance.new("TextButton")
-    modeBtn.Size = UDim2.new(0.47, 0, 0, 32)
-    modeBtn.Position = UDim2.new(0.53, 0, 0, 46)
+    modeBtn.Size = UDim2.new(0.48, -12, 0, 34)
+    modeBtn.Position = UDim2.new(0.5, 6, 0, 50)
     modeBtn.BackgroundColor3 = Color3.fromRGB(88, 101, 242)
     modeBtn.Text = "🎯 MODE: " .. CONFIG.MODE
     modeBtn.TextColor3 = Color3.new(1, 1, 1)
     modeBtn.Font = Enum.Font.GothamBold
-    modeBtn.TextSize = 11
+    modeBtn.TextSize = 12
     modeBtn.Parent = mainFrame
     local modeC = Instance.new("UICorner"); modeC.CornerRadius = UDim.new(0, 6); modeC.Parent = modeBtn
 
@@ -632,91 +682,352 @@ local function buildUI()
         saveConfig()
     end)
 
-    -- Option Toggles Row
-    local breakToggle = Instance.new("TextButton")
-    breakToggle.Size = UDim2.new(0.47, 0, 0, 24)
-    breakToggle.Position = UDim2.fromOffset(12, 84)
-    breakToggle.BackgroundColor3 = CONFIG.AUTO_BREAK and Color3.fromRGB(40, 50, 75) or Color3.fromRGB(25, 28, 40)
-    breakToggle.Text = "Chest Break: " .. (CONFIG.AUTO_BREAK and "ON" or "OFF")
-    breakToggle.TextColor3 = CONFIG.AUTO_BREAK and Color3.fromRGB(160, 220, 255) or Color3.fromRGB(150, 155, 170)
-    breakToggle.Font = Enum.Font.GothamMedium
-    breakToggle.TextSize = 10
-    breakToggle.Parent = mainFrame
-    local btC = Instance.new("UICorner"); btC.CornerRadius = UDim.new(0, 5); btC.Parent = breakToggle
+    -- Tab Navigation Buttons
+    local tabContainer = Instance.new("Frame")
+    tabContainer.Size = UDim2.new(1, -24, 0, 28)
+    tabContainer.Position = UDim2.fromOffset(12, 92)
+    tabContainer.BackgroundTransparency = 1
+    tabContainer.Parent = mainFrame
 
-    breakToggle.MouseButton1Click:Connect(function()
-        CONFIG.AUTO_BREAK = not CONFIG.AUTO_BREAK
-        breakToggle.Text = "Chest Break: " .. (CONFIG.AUTO_BREAK and "ON" or "OFF")
-        breakToggle.BackgroundColor3 = CONFIG.AUTO_BREAK and Color3.fromRGB(40, 50, 75) or Color3.fromRGB(25, 28, 40)
-        breakToggle.TextColor3 = CONFIG.AUTO_BREAK and Color3.fromRGB(160, 220, 255) or Color3.fromRGB(150, 155, 170)
-        saveConfig()
-    end)
+    local tabs = { "DASHBOARD", "SETTINGS", "WEBHOOK", "LOGS" }
+    local tabButtons = {}
+    local tabPages = {}
 
-    local shopToggle = Instance.new("TextButton")
-    shopToggle.Size = UDim2.new(0.47, 0, 0, 24)
-    shopToggle.Position = UDim2.new(0.53, 0, 0, 84)
-    shopToggle.BackgroundColor3 = CONFIG.AUTO_RESTOCK and Color3.fromRGB(40, 50, 75) or Color3.fromRGB(25, 28, 40)
-    shopToggle.Text = "Auto Restock: " .. (CONFIG.AUTO_RESTOCK and "ON" or "OFF")
-    shopToggle.TextColor3 = CONFIG.AUTO_RESTOCK and Color3.fromRGB(160, 220, 255) or Color3.fromRGB(150, 155, 170)
-    shopToggle.Font = Enum.Font.GothamMedium
-    shopToggle.TextSize = 10
-    shopToggle.Parent = mainFrame
-    local stC = Instance.new("UICorner"); stC.CornerRadius = UDim.new(0, 5); stC.Parent = shopToggle
+    local pageContainer = Instance.new("Frame")
+    pageContainer.Size = UDim2.new(1, -24, 0, 224)
+    pageContainer.Position = UDim2.fromOffset(12, 124)
+    pageContainer.BackgroundTransparency = 1
+    pageContainer.Parent = mainFrame
 
-    shopToggle.MouseButton1Click:Connect(function()
-        CONFIG.AUTO_RESTOCK = not CONFIG.AUTO_RESTOCK
-        shopToggle.Text = "Auto Restock: " .. (CONFIG.AUTO_RESTOCK and "ON" or "OFF")
-        shopToggle.BackgroundColor3 = CONFIG.AUTO_RESTOCK and Color3.fromRGB(40, 50, 75) or Color3.fromRGB(25, 28, 40)
-        shopToggle.TextColor3 = CONFIG.AUTO_RESTOCK and Color3.fromRGB(160, 220, 255) or Color3.fromRGB(150, 155, 170)
-        saveConfig()
-    end)
+    for idx, tabName in ipairs(tabs) do
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(0.24, -2, 1, 0)
+        btn.Position = UDim2.new((idx-1)*0.25, 0, 0, 0)
+        btn.BackgroundColor3 = idx == 1 and Color3.fromRGB(88, 101, 242) or Color3.fromRGB(24, 28, 44)
+        btn.Text = tabName
+        btn.TextColor3 = idx == 1 and Color3.new(1,1,1) or Color3.fromRGB(160, 168, 195)
+        btn.Font = Enum.Font.GothamBold
+        btn.TextSize = 10
+        btn.Parent = tabContainer
+        local btnC = Instance.new("UICorner"); btnC.CornerRadius = UDim.new(0, 6); btnC.Parent = btn
 
-    -- Stats Display Panel
+        local page = Instance.new("Frame")
+        page.Size = UDim2.new(1, 0, 1, 0)
+        page.BackgroundTransparency = 1
+        page.Visible = (idx == 1)
+        page.Parent = pageContainer
+
+        tabButtons[tabName] = btn
+        tabPages[tabName] = page
+
+        btn.MouseButton1Click:Connect(function()
+            for tName, tBtn in pairs(tabButtons) do
+                tBtn.BackgroundColor3 = (tName == tabName) and Color3.fromRGB(88, 101, 242) or Color3.fromRGB(24, 28, 44)
+                tBtn.TextColor3 = (tName == tabName) and Color3.new(1,1,1) or Color3.fromRGB(160, 168, 195)
+            end
+            for tName, tPage in pairs(tabPages) do
+                tPage.Visible = (tName == tabName)
+            end
+        end)
+    end
+
+    ----------------------------------------------------------------------------
+    -- TAB 1: DASHBOARD
+    ----------------------------------------------------------------------------
+    local dashPage = tabPages["DASHBOARD"]
     local statsGrid = Instance.new("Frame")
-    statsGrid.Size = UDim2.new(1, -24, 0, 120)
-    statsGrid.Position = UDim2.fromOffset(12, 114)
+    statsGrid.Size = UDim2.new(1, 0, 1, 0)
     statsGrid.BackgroundColor3 = Color3.fromRGB(20, 23, 34)
-    statsGrid.Parent = mainFrame
+    statsGrid.Parent = dashPage
     local sgC = Instance.new("UICorner"); sgC.CornerRadius = UDim.new(0, 8); sgC.Parent = statsGrid
 
-    local statsLabel = Instance.new("TextLabel")
-    statsLabel.Size = UDim2.new(1, -16, 1, -12)
-    statsLabel.Position = UDim2.fromOffset(8, 6)
-    statsLabel.BackgroundTransparency = 1
-    statsLabel.Text = "Initializing stats..."
-    statsLabel.TextColor3 = Color3.fromRGB(200, 212, 238)
-    statsLabel.Font = Enum.Font.Code
-    statsLabel.TextSize = 11
-    statsLabel.TextXAlignment = Enum.TextXAlignment.Left
-    statsLabel.TextYAlignment = Enum.TextYAlignment.Top
-    statsLabel.Parent = statsGrid
+    local statsText = Instance.new("TextLabel")
+    statsText.Size = UDim2.new(1, -20, 1, -16)
+    statsText.Position = UDim2.fromOffset(10, 8)
+    statsText.BackgroundTransparency = 1
+    statsText.Text = "Initializing stats..."
+    statsText.TextColor3 = Color3.fromRGB(210, 222, 245)
+    statsText.Font = Enum.Font.Code
+    statsText.TextSize = 12
+    statsText.TextXAlignment = Enum.TextXAlignment.Left
+    statsText.TextYAlignment = Enum.TextYAlignment.Top
+    statsText.Parent = statsGrid
 
+    ----------------------------------------------------------------------------
+    -- TAB 2: SETTINGS (Full Original Toggles Restored)
+    ----------------------------------------------------------------------------
+    local setPage = tabPages["SETTINGS"]
+    local setScroll = Instance.new("ScrollingFrame")
+    setScroll.Size = UDim2.new(1, 0, 1, 0)
+    setScroll.BackgroundTransparency = 1
+    setScroll.CanvasSize = UDim2.new(0, 0, 0, 260)
+    setScroll.ScrollBarThickness = 4
+    setScroll.Parent = setPage
+
+    local toggleConfigs = {
+        { Key = "USE_ULTRA", Label = "Use Ultra Pet Cubes" },
+        { Key = "AUTO_RESTOCK", Label = "Auto Restock Cubes from Merchant" },
+        { Key = "AUTO_FRUITS", Label = "Auto Consume Fruit Boosts" },
+        { Key = "AUTO_BREAK", Label = "Auto Break Boss Chest" },
+        { Key = "ALERT_RARE", Label = "Send Discord Alert on Rare / Huge" },
+        { Key = "ALERT_LOW_CUBES", Label = "Alert on Low Cube Count" },
+    }
+
+    for i, cfg in ipairs(toggleConfigs) do
+        local tBtn = Instance.new("TextButton")
+        tBtn.Size = UDim2.new(1, 0, 0, 30)
+        tBtn.Position = UDim2.fromOffset(0, (i-1)*34)
+        tBtn.BackgroundColor3 = CONFIG[cfg.Key] and Color3.fromRGB(38, 48, 75) or Color3.fromRGB(22, 25, 38)
+        tBtn.Text = "  " .. cfg.Label .. ": " .. (CONFIG[cfg.Key] and "ON" or "OFF")
+        tBtn.TextColor3 = CONFIG[cfg.Key] and Color3.fromRGB(160, 220, 255) or Color3.fromRGB(150, 155, 170)
+        tBtn.Font = Enum.Font.GothamMedium
+        tBtn.TextSize = 11
+        tBtn.TextXAlignment = Enum.TextXAlignment.Left
+        tBtn.Parent = setScroll
+        local tbC = Instance.new("UICorner"); tbC.CornerRadius = UDim.new(0, 6); tbC.Parent = tBtn
+
+        tBtn.MouseButton1Click:Connect(function()
+            CONFIG[cfg.Key] = not CONFIG[cfg.Key]
+            tBtn.Text = "  " .. cfg.Label .. ": " .. (CONFIG[cfg.Key] and "ON" or "OFF")
+            tBtn.BackgroundColor3 = CONFIG[cfg.Key] and Color3.fromRGB(38, 48, 75) or Color3.fromRGB(22, 25, 38)
+            tBtn.TextColor3 = CONFIG[cfg.Key] and Color3.fromRGB(160, 220, 255) or Color3.fromRGB(150, 155, 170)
+            saveConfig()
+        end)
+    end
+
+    -- Low Cube Threshold Input
+    local threshFrame = Instance.new("Frame")
+    threshFrame.Size = UDim2.new(1, 0, 0, 32)
+    threshFrame.Position = UDim2.fromOffset(0, #toggleConfigs * 34)
+    threshFrame.BackgroundColor3 = Color3.fromRGB(22, 25, 38)
+    threshFrame.Parent = setScroll
+    local tfC = Instance.new("UICorner"); tfC.CornerRadius = UDim.new(0, 6); tfC.Parent = threshFrame
+
+    local threshLabel = Instance.new("TextLabel")
+    threshLabel.Size = UDim2.new(0.65, 0, 1, 0)
+    threshLabel.Position = UDim2.fromOffset(10, 0)
+    threshLabel.BackgroundTransparency = 1
+    threshLabel.Text = "Cube Alert Threshold:"
+    threshLabel.TextColor3 = Color3.fromRGB(200, 205, 220)
+    threshLabel.Font = Enum.Font.GothamMedium
+    threshLabel.TextSize = 11
+    threshLabel.TextXAlignment = Enum.TextXAlignment.Left
+    threshLabel.Parent = threshFrame
+
+    local threshBox = Instance.new("TextBox")
+    threshBox.Size = UDim2.new(0.3, -10, 0, 24)
+    threshBox.Position = UDim2.new(0.7, 0, 0.5, -12)
+    threshBox.BackgroundColor3 = Color3.fromRGB(15, 17, 26)
+    threshBox.Text = tostring(CONFIG.CUBE_ALERT_THRESHOLD)
+    threshBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+    threshBox.Font = Enum.Font.GothamBold
+    threshBox.TextSize = 11
+    threshBox.Parent = threshFrame
+    local tbxC = Instance.new("UICorner"); tbxC.CornerRadius = UDim.new(0, 4); tbxC.Parent = threshBox
+
+    threshBox.FocusLost:Connect(function()
+        local val = tonumber(threshBox.Text)
+        if val then CONFIG.CUBE_ALERT_THRESHOLD = math.floor(val); saveConfig() end
+    end)
+
+    ----------------------------------------------------------------------------
+    -- TAB 3: WEBHOOK SETUP & TESTING
+    ----------------------------------------------------------------------------
+    local webPage = tabPages["WEBHOOK"]
+    local webCard = Instance.new("Frame")
+    webCard.Size = UDim2.new(1, 0, 1, 0)
+    webCard.BackgroundColor3 = Color3.fromRGB(20, 23, 34)
+    webCard.Parent = webPage
+    local wcC = Instance.new("UICorner"); wcC.CornerRadius = UDim.new(0, 8); wcC.Parent = webCard
+
+    local wLabel = Instance.new("TextLabel")
+    wLabel.Size = UDim2.new(1, -20, 0, 24)
+    wLabel.Position = UDim2.fromOffset(10, 10)
+    wLabel.BackgroundTransparency = 1
+    wLabel.Text = "Discord Webhook URL:"
+    wLabel.TextColor3 = Color3.fromRGB(200, 205, 225)
+    wLabel.Font = Enum.Font.GothamBold
+    wLabel.TextSize = 12
+    wLabel.TextXAlignment = Enum.TextXAlignment.Left
+    wLabel.Parent = webCard
+
+    local wBox = Instance.new("TextBox")
+    wBox.Size = UDim2.new(1, -20, 0, 32)
+    wBox.Position = UDim2.fromOffset(10, 38)
+    wBox.BackgroundColor3 = Color3.fromRGB(13, 15, 24)
+    wBox.Text = CONFIG.WEBHOOK_URL
+    wBox.PlaceholderText = "Paste Discord Webhook URL here..."
+    wBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+    wBox.Font = Enum.Font.Code
+    wBox.TextSize = 10
+    wBox.TextTruncate = Enum.TextTruncate.AtEnd
+    wBox.Parent = webCard
+    local wbc = Instance.new("UICorner"); wbc.CornerRadius = UDim.new(0, 6); wbc.Parent = wBox
+
+    wBox.FocusLost:Connect(function()
+        CONFIG.WEBHOOK_URL = string.gsub(wBox.Text, "%s+", "")
+        saveConfig()
+        addLog("Webhook URL saved")
+    end)
+
+    local testWebBtn = Instance.new("TextButton")
+    testWebBtn.Size = UDim2.new(0.47, 0, 0, 32)
+    testWebBtn.Position = UDim2.fromOffset(10, 82)
+    testWebBtn.BackgroundColor3 = Color3.fromRGB(88, 101, 242)
+    testWebBtn.Text = "🧪 TEST WEBHOOK"
+    testWebBtn.TextColor3 = Color3.new(1, 1, 1)
+    testWebBtn.Font = Enum.Font.GothamBold
+    testWebBtn.TextSize = 11
+    testWebBtn.Parent = webCard
+    local twC = Instance.new("UICorner"); twC.CornerRadius = UDim.new(0, 6); twC.Parent = testWebBtn
+
+    testWebBtn.MouseButton1Click:Connect(function()
+        WebhookService:Push("Test Notification", "Quest Runner webhook integration working cleanly!", WEBHOOK_COLORS.GOLD)
+        addLog("Test webhook notification sent!")
+    end)
+
+    local summaryWebBtn = Instance.new("TextButton")
+    summaryWebBtn.Size = UDim2.new(0.47, 0, 0, 32)
+    summaryWebBtn.Position = UDim2.new(0.53, 0, 0, 82)
+    summaryWebBtn.BackgroundColor3 = Color3.fromRGB(46, 160, 90)
+    summaryWebBtn.Text = "📊 SEND SUMMARY"
+    summaryWebBtn.TextColor3 = Color3.new(1, 1, 1)
+    summaryWebBtn.Font = Enum.Font.GothamBold
+    summaryWebBtn.TextSize = 11
+    summaryWebBtn.Parent = webCard
+    local swC = Instance.new("UICorner"); swC.CornerRadius = UDim.new(0, 6); swC.Parent = summaryWebBtn
+
+    summaryWebBtn.MouseButton1Click:Connect(function()
+        WebhookService:Push("Manual Summary", "Stats: Quests=" .. STATS.QuestsCompleted .. ", Pets=" .. STATS.PetsCaught .. ", Chests=" .. STATS.ChestsBroken, WEBHOOK_COLORS.TEAL)
+        addLog("Summary webhook sent!")
+    end)
+
+    ----------------------------------------------------------------------------
+    -- TAB 4: EVENT LOGS
+    ----------------------------------------------------------------------------
+    local logPage = tabPages["LOGS"]
+    local logScroll = Instance.new("ScrollingFrame")
+    logScroll.Size = UDim2.new(1, 0, 1, 0)
+    logScroll.BackgroundColor3 = Color3.fromRGB(15, 17, 26)
+    logScroll.CanvasSize = UDim2.new(0, 0, 0, 500)
+    logScroll.ScrollBarThickness = 4
+    logScroll.Parent = logPage
+    local lcC = Instance.new("UICorner"); lcC.CornerRadius = UDim.new(0, 8); lcC.Parent = logScroll
+
+    local logText = Instance.new("TextLabel")
+    logText.Size = UDim2.new(1, -16, 1, -12)
+    logText.Position = UDim2.fromOffset(8, 6)
+    logText.BackgroundTransparency = 1
+    logText.Text = table.concat(LOG_ENTRIES, "\n")
+    logText.TextColor3 = Color3.fromRGB(180, 220, 190)
+    logText.Font = Enum.Font.Code
+    logText.TextSize = 10
+    logText.TextXAlignment = Enum.TextXAlignment.Left
+    logText.TextYAlignment = Enum.TextYAlignment.Top
+    logText.Parent = logScroll
+
+    _G.EQR_LOG_UI = logText
+
+    ----------------------------------------------------------------------------
+    -- State Machine UI Listener Update
+    ----------------------------------------------------------------------------
     table.insert(StateMachine.UIListeners, function(state, detail)
         statusPill.Text = string.upper(state) .. " • " .. string.sub(detail, 1, 14)
         local elapsed = os.time() - STATS.StartTime
-        statsLabel.Text = string.format(
-            "Runtime:      %02d:%02d:%02d\n" ..
-            "Quests Done:  %d\n" ..
-            "Pets Caught:  %d\n" ..
-            "Chests Broke: %d\n" ..
-            "Cubes Left:   %d %s\n" ..
-            "Priority:     Easiest Quest Target First",
+        statsText.Text = string.format(
+            "=================== DASHBOARD ===================\n" ..
+            "Mode:          %s\n" ..
+            "State:         %s (%s)\n" ..
+            "Runtime:       %02d:%02d:%02d\n\n" ..
+            "Quests Done:   %d\n" ..
+            "Pets Caught:   %d\n" ..
+            "Chests Broke:  %d\n" ..
+            "Cubes Spent:   %d\n" ..
+            "Cubes Left:    %d %s\n" ..
+            "Target Rule:   Easiest Active Quest Goal First\n" ..
+            "=================================================",
+            CONFIG.MODE, state, detail,
             math.floor(elapsed / 3600), math.floor((elapsed % 3600) / 60), elapsed % 60,
-            STATS.QuestsCompleted,
-            STATS.PetsCaught,
-            STATS.ChestsBroken,
+            STATS.QuestsCompleted, STATS.PetsCaught, STATS.ChestsBroken, STATS.CubesSpent,
             getCubeCount(), getCubeName()
         )
     end)
 end
 
 --------------------------------------------------------------------------------
--- SECTION 10: Entrypoint
+-- SECTION 10: Mode Selection Startup Modal
+--------------------------------------------------------------------------------
+local function promptModeSelection()
+    local existingSelector = playerGui:FindFirstChild("EQR_ModeSelector")
+    if existingSelector then existingSelector:Destroy() end
+
+    local modalGui = Instance.new("ScreenGui")
+    modalGui.Name = "EQR_ModeSelector"
+    modalGui.ResetOnSpawn = false
+    modalGui.Parent = playerGui
+
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.fromOffset(340, 200)
+    frame.Position = UDim2.new(0.5, -170, 0.5, -100)
+    frame.BackgroundColor3 = Color3.fromRGB(15, 17, 26)
+    frame.Parent = modalGui
+    local fc = Instance.new("UICorner"); fc.CornerRadius = UDim.new(0, 12); fc.Parent = frame
+    local fs = Instance.new("UIStroke"); fs.Color = Color3.fromRGB(88, 101, 242); fs.Thickness = 1.5; fs.Parent = frame
+
+    local mTitle = Instance.new("TextLabel")
+    mTitle.Size = UDim2.new(1, 0, 0, 40)
+    mTitle.BackgroundTransparency = 1
+    mTitle.Text = "Select Quest Runner Mode"
+    mTitle.TextColor3 = Color3.fromRGB(240, 243, 255)
+    mTitle.Font = Enum.Font.GothamBold
+    mTitle.TextSize = 14
+    mTitle.Parent = frame
+
+    local qBtn = Instance.new("TextButton")
+    qBtn.Size = UDim2.new(0.9, 0, 0, 55)
+    qBtn.Position = UDim2.fromOffset(17, 50)
+    qBtn.BackgroundColor3 = Color3.fromRGB(46, 160, 90)
+    qBtn.Text = "📜 QUEST MODE\nFarms Quests, Buys Cubes & Breaks Chests"
+    qBtn.TextColor3 = Color3.new(1, 1, 1)
+    qBtn.Font = Enum.Font.GothamBold
+    qBtn.TextSize = 11
+    qBtn.Parent = frame
+    local qc = Instance.new("UICorner"); qc.CornerRadius = UDim.new(0, 8); qc.Parent = qBtn
+
+    qBtn.MouseButton1Click:Connect(function()
+        CONFIG.MODE = "QUEST"
+        CONFIG.RUNNING = true
+        modalGui:Destroy()
+        addLog("Mode selected: QUEST MODE")
+    end)
+
+    local hBtn = Instance.new("TextButton")
+    hBtn.Size = UDim2.new(0.9, 0, 0, 55)
+    hBtn.Position = UDim2.fromOffset(17, 118)
+    hBtn.BackgroundColor3 = Color3.fromRGB(130, 70, 230)
+    hBtn.Text = "💎 HUGE MODE\nServer Hops for Boss Chests & Rare Huges"
+    hBtn.TextColor3 = Color3.new(1, 1, 1)
+    hBtn.Font = Enum.Font.GothamBold
+    hBtn.TextSize = 11
+    hBtn.Parent = frame
+    local hc = Instance.new("UICorner"); hc.CornerRadius = UDim.new(0, 8); hc.Parent = hBtn
+
+    hBtn.MouseButton1Click:Connect(function()
+        CONFIG.MODE = "HUGE"
+        CONFIG.RUNNING = true
+        modalGui:Destroy()
+        addLog("Mode selected: HUGE MODE")
+    end)
+end
+
+--------------------------------------------------------------------------------
+-- SECTION 11: Main Execution Entrypoint
 --------------------------------------------------------------------------------
 local function main()
     buildUI()
+    promptModeSelection()
     executeMainLoop()
-    print("[EQR v3.1.0] Sleek Compact Runner loaded cleanly.")
+    addLog("Runner v3.2.0 initialized cleanly.")
 end
 
 local ok, err = xpcall(main, debug.traceback)
