@@ -1,12 +1,10 @@
 --[[
-    Elemental Quest Runner v3.0.0 (Professional Architecture Refactor)
-    ------------------------------------------------------------------
-    - Singleton Runtime Cleanup (_G.EQR_RUNTIME)
-    - Authoritative State Machine Architecture
-    - Non-Blocking Asynchronous Webhook Queue
-    - Strict Boss Chest & Huge Detection Engine
-    - Robust Server Hop & Queue-On-Teleport Loader
-    - Modern Responsive Dashboard UI
+    Elemental Quest Runner v3.1.0 (Sleek Compact UI & Logic Optimization)
+    ----------------------------------------------------------------------
+    - Fixed Shop Teleport Spam: Throttled shop visits to 45s intervals or low cube count
+    - Fixed Boss Chest Detection: Matches any breakable model near BOSS_CHEST_SPAWN_POS
+    - Quest Pet Target Prioritization: Targets active quest pets (easiest first) for fast completion
+    - Sleek Compact GUI: Modern 320x240 dashboard with clean stats grid and control toggles
 --]]
 
 local Players = game:GetService("Players")
@@ -14,7 +12,6 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 local VirtualUser = game:GetService("VirtualUser")
 local TeleportService = game:GetService("TeleportService")
-local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
@@ -25,57 +22,42 @@ local playerGui = player:WaitForChild("PlayerGui")
 --------------------------------------------------------------------------------
 local previousRuntime = _G.EQR_RUNTIME
 if previousRuntime and type(previousRuntime.Cleanup) == "function" then
-    pcall(function()
-        previousRuntime:Cleanup()
-    end)
+    pcall(function() previousRuntime:Cleanup() end)
 end
 
 local EQR_RUNTIME = {
-    Version = "v3.0.0",
+    Version = "v3.1.0",
     RunId = (previousRuntime and previousRuntime.RunId or 0) + 1,
     Connections = {},
     Tasks = {},
     IsActive = true,
 }
-
 _G.EQR_RUNTIME = EQR_RUNTIME
 
-function EQR_RUNTIME:AddConnection(connection)
-    if typeof(connection) == "RBXScriptConnection" then
-        table.insert(self.Connections, connection)
+function EQR_RUNTIME:AddConnection(conn)
+    if typeof(conn) == "RBXScriptConnection" then
+        table.insert(self.Connections, conn)
     end
-    return connection
+    return conn
 end
 
 function EQR_RUNTIME:SpawnTask(fn)
-    local taskThread = task.spawn(function(...)
-        if self.IsActive then
-            fn(...)
-        end
+    local t = task.spawn(function(...)
+        if self.IsActive then fn(...) end
     end)
-    table.insert(self.Tasks, taskThread)
-    return taskThread
+    table.insert(self.Tasks, t)
+    return t
 end
 
 function EQR_RUNTIME:Cleanup()
     self.IsActive = false
-    print("[EQR] Cleaning up previous runtime instance #" .. tostring(self.RunId))
-    
-    for _, conn in ipairs(self.Connections) do
-        pcall(function() conn:Disconnect() end)
-    end
+    for _, conn in ipairs(self.Connections) do pcall(function() conn:Disconnect() end) end
     table.clear(self.Connections)
-
-    for _, t in ipairs(self.Tasks) do
-        pcall(function() task.cancel(t) end)
-    end
+    for _, t in ipairs(self.Tasks) do pcall(function() task.cancel(t) end) end
     table.clear(self.Tasks)
 
     local oldGui = playerGui:FindFirstChild("EQR_Pro")
     if oldGui then oldGui:Destroy() end
-
-    local oldSelector = playerGui:FindFirstChild("ModeSelector")
-    if oldSelector then oldSelector:Destroy() end
 end
 
 local function isCurrentRun(runId)
@@ -83,79 +65,34 @@ local function isCurrentRun(runId)
 end
 
 --------------------------------------------------------------------------------
--- SECTION 2: ConfigManager & Schema Validation
+-- SECTION 2: Configuration & State
 --------------------------------------------------------------------------------
 local CONFIG_FILE = "ElementalQuestRunner_Config.json"
 
-local CONFIG_SCHEMA = {
-    RUNNING = "boolean",
-    MODE = "string",
-    USE_ULTRA = "boolean",
-    AUTO_RESTOCK = "boolean",
-    AUTO_FRUITS = "boolean",
-    AUTO_BREAK = "boolean",
-    ALERT_RARE = "boolean",
-    ALERT_LOW_CUBES = "boolean",
-    CUBE_ALERT_THRESHOLD = "number",
-    WEBHOOK_URL = "string",
-}
-
 local CONFIG = {
     RUNNING = false,
-    MODE = "QUEST",
+    MODE = "QUEST", -- "QUEST" or "HUGE"
     USE_ULTRA = false,
     AUTO_RESTOCK = true,
-    AUTO_FRUITS = true,
     AUTO_BREAK = true,
-    ALERT_RARE = true,
-    ALERT_LOW_CUBES = true,
-    CUBE_ALERT_THRESHOLD = 50,
+    SHOP_INTERVAL = 45, -- Seconds between shop stock checks
     WEBHOOK_URL = "",
 }
-
-local function validateConfig(data)
-    if type(data) ~= "table" then return false end
-    for key, expectedType in pairs(CONFIG_SCHEMA) do
-        if data[key] ~= nil then
-            if type(data[key]) ~= expectedType then
-                return false
-            end
-            if key == "MODE" and data[key] ~= "QUEST" and data[key] ~= "HUGE" then
-                return false
-            end
-            if key == "CUBE_ALERT_THRESHOLD" and (data[key] < 1 or data[key] > 9999) then
-                return false
-            end
-        end
-    end
-    return true
-end
 
 local function loadConfig()
     local isFileFunc = isfile or (syn and syn.isfile)
     local readFileFunc = readfile or (syn and syn.readfile)
-    if isFileFunc and readFileFunc then
-        local ok, err = pcall(function()
-            if isFileFunc(CONFIG_FILE) then
-                local content = readFileFunc(CONFIG_FILE)
-                if content and content ~= "" then
-                    local data = HttpService:JSONDecode(content)
-                    if validateConfig(data) then
-                        for key, val in pairs(data) do
-                            if key ~= "MODE" and key ~= "RUNNING" then
-                                CONFIG[key] = val
-                            end
-                        end
-                        print("[EQR] Configuration loaded successfully.")
-                    else
-                        warn("[EQR] Invalid config format; using defaults.")
+    if isFileFunc and readFileFunc and isFileFunc(CONFIG_FILE) then
+        pcall(function()
+            local data = HttpService:JSONDecode(readFileFunc(CONFIG_FILE))
+            if type(data) == "table" then
+                for k, v in pairs(data) do
+                    if k ~= "MODE" and k ~= "RUNNING" and CONFIG[k] ~= nil then
+                        CONFIG[k] = v
                     end
                 end
             end
         end)
-        if not ok then
-            warn("[EQR] Config load error: " .. tostring(err))
-        end
     end
 end
 
@@ -163,13 +100,11 @@ local function saveConfig()
     local writeFileFunc = writefile or (syn and syn.writefile)
     if writeFileFunc then
         pcall(function()
-            local persistentConfig = {}
-            for key, value in pairs(CONFIG) do
-                if key ~= "MODE" and key ~= "RUNNING" then
-                    persistentConfig[key] = value
-                end
+            local saveCopy = {}
+            for k, v in pairs(CONFIG) do
+                if k ~= "MODE" and k ~= "RUNNING" then saveCopy[k] = v end
             end
-            writeFileFunc(CONFIG_FILE, HttpService:JSONEncode(persistentConfig))
+            writeFileFunc(CONFIG_FILE, HttpService:JSONEncode(saveCopy))
         end)
     end
 end
@@ -177,160 +112,75 @@ end
 loadConfig()
 
 --------------------------------------------------------------------------------
--- SECTION 3: WebhookService (Async Event Queue & Rate Limit Handler)
+-- SECTION 3: Webhook Service (Non-Blocking Queue)
 --------------------------------------------------------------------------------
-local WebhookService = {
-    Queue = {},
-    IsProcessing = false,
-    RateLimitUntil = 0,
-}
+local WebhookService = { Queue = {}, IsProcessing = false, RateLimitUntil = 0 }
+local WEBHOOK_COLORS = { GREEN = 3066993, RED = 15158332, GOLD = 15844367, BLUE = 3447003 }
 
-local WEBHOOK_COLORS = {
-    GREEN = 3066993,
-    RED = 15158332,
-    GOLD = 15844367,
-    PURPLE = 10181046,
-    ORANGE = 15105570,
-    BLUE = 3447003,
-    TEAL = 1752220,
-    GRAY = 9807270,
-}
-
-function WebhookService:Push(title, description, color, fields, isReliable)
+function WebhookService:Push(title, description, color, fields)
     if not CONFIG.WEBHOOK_URL or CONFIG.WEBHOOK_URL == "" then return end
-    if not string.match(CONFIG.WEBHOOK_URL, "^https?://") then return end
-    
-    table.insert(self.Queue, {
-        Title = title,
-        Description = description,
-        Color = color or WEBHOOK_COLORS.GREEN,
-        Fields = fields or {},
-        Reliable = isReliable == true,
-        Attempts = 0,
-        Timestamp = os.time()
-    })
-
+    table.insert(self.Queue, { Title = title, Description = description, Color = color or WEBHOOK_COLORS.GREEN, Fields = fields or {} })
     self:ProcessQueue()
 end
 
 function WebhookService:ProcessQueue()
     if self.IsProcessing then return end
     self.IsProcessing = true
-
     EQR_RUNTIME:SpawnTask(function()
         local req = (syn and syn.request) or (http and http.request) or http_request or request
-
         while #self.Queue > 0 and EQR_RUNTIME.IsActive do
-            if os.clock() < self.RateLimitUntil then
-                task.wait(math.max(0.5, self.RateLimitUntil - os.clock()))
-            end
-
-            local item = self.Queue[1]
-            if not item then break end
-
-            item.Attempts = item.Attempts + 1
-
-            local embed = {
-                title = item.Title,
-                description = item.Description,
-                color = item.Color,
-                fields = item.Fields,
-                footer = { text = "Quest Runner " .. EQR_RUNTIME.Version .. " • " .. os.date("%X") },
-                timestamp = DateTime.now():ToIsoDate(),
-            }
-            local payload = HttpService:JSONEncode({ embeds = { embed } })
-
-            local ok, response = pcall(function()
-                return req({
-                    Url = CONFIG.WEBHOOK_URL,
-                    Method = "POST",
-                    Headers = { ["Content-Type"] = "application/json" },
-                    Body = payload,
-                })
+            if os.clock() < self.RateLimitUntil then task.wait(0.5) continue end
+            local item = table.remove(self.Queue, 1)
+            local payload = HttpService:JSONEncode({
+                embeds = {{
+                    title = item.Title, description = item.Description, color = item.Color, fields = item.Fields,
+                    footer = { text = "EQR " .. EQR_RUNTIME.Version .. " • " .. os.date("%X") }
+                }}
+            })
+            pcall(function()
+                req({ Url = CONFIG.WEBHOOK_URL, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = payload })
             end)
-
-            local status = ok and tonumber(response.StatusCode or response.Status) or 0
-            local success = (status >= 200 and status < 300)
-
-            if status == 429 then
-                local retryAfter = 5
-                pcall(function()
-                    local decoded = HttpService:JSONDecode(response.Body or response.body or "{}")
-                    retryAfter = tonumber(decoded.retry_after) or retryAfter
-                end)
-                self.RateLimitUntil = os.clock() + retryAfter
-                print("[EQR Webhook] Rate limited (429). Pausing for " .. tostring(retryAfter) .. "s")
-                task.wait(retryAfter)
-            elseif success then
-                table.remove(self.Queue, 1)
-            else
-                if item.Reliable and item.Attempts < 3 then
-                    task.wait(1.5 * item.Attempts)
-                else
-                    table.remove(self.Queue, 1)
-                    print("[EQR Webhook] Alert failed after " .. item.Attempts .. " attempts: " .. tostring(item.Title))
-                end
-            end
-
-            task.wait(0.2)
+            task.wait(0.3)
         end
-
         self.IsProcessing = false
     end)
 end
 
 --------------------------------------------------------------------------------
--- SECTION 4: Game Services & Module References
+-- SECTION 4: Game Services & References
 --------------------------------------------------------------------------------
 local Library = ReplicatedStorage:WaitForChild("Library", 10)
-if not Library then
-    warn("[EQR] Library module missing from ReplicatedStorage!")
-    return
-end
+if not Library then warn("[EQR] Library module missing!"); return end
 
 local function safeRequire(path)
-    local ok, result = pcall(require, path)
-    return ok and result or nil
+    local ok, res = pcall(require, path)
+    return ok and res or nil
 end
 
 local Save = safeRequire(Library.Client:WaitForChild("Save"))
 local ClientNetwork = safeRequire(Library.Client:WaitForChild("Network"))
 local MapCmds = safeRequire(Library.Client:WaitForChild("MapCmds"))
 local Directory = safeRequire(Library.Directory)
-local FruitCmds = Library.Client:FindFirstChild("FruitCmds") and safeRequire(Library.Client.FruitCmds) or nil
 local MiscItem = Library.Items and Library.Items:FindFirstChild("MiscItem") and safeRequire(Library.Items.MiscItem) or nil
 local PetItem = Library.Items and Library.Items:FindFirstChild("PetItem") and safeRequire(Library.Items.PetItem) or nil
 
-if not Save or not ClientNetwork or not Directory then
-    warn("[EQR] Core client modules failed to load.")
-    return
-end
-
 local QUEST_ID = "ElementalQuests"
-local SCRIPT_URL = "https://raw.githubusercontent.com/jaidin-dev/Ps99-scripts/refs/heads/main/AutoElementalQuest.lua"
-local ELEMENTAL_REALM_CFRAME = CFrame.new(1427.29, 17.5, -24949.01)
+local SCRIPT_URL = "https://raw.githubusercontent.com/jaidin-dev/Ps99-scripts/refs/heads/main/AutoElementalQuest2.3v"
 local FARM_ZONE_CFRAME = CFrame.new(1427.29, 17.5, -24949.01)
-local SHOP_CFRAME = CFrame.new(783.183655, 19.5289688, -24890.543, -0.999179542, 2.65699146e-05, -0.0404994301, 5.14089379e-06, 0.999999881, 0.000529223063, 0.0404994413, 0.000528580684, -0.999179423)
-local BOSS_CHEST_CFRAME = CFrame.new(1434.06567, 20.199398, -24874.4395, 0.271742523, 0.000449937157, 0.962369859, -0.00167914852, 0.999998569, 6.60821979e-06, -0.962368548, -0.00161775772, 0.27174291)
+local SHOP_CFRAME = CFrame.new(783.18, 19.52, -24890.54)
+local BOSS_CHEST_CFRAME = CFrame.new(1434.06, 20.19, -24874.43)
 local BOSS_CHEST_SPAWN_POS = BOSS_CHEST_CFRAME.Position
-local BOSS_CHEST_LOOT_CFRAME = BOSS_CHEST_CFRAME
 local PET_CUBE_STORE_ID = "PetCubeStore"
 
 local STATS = {
     StartTime = os.time(),
     QuestsCompleted = 0,
     PetsCaught = 0,
-    PetsEscaped = 0,
-    CubesSpent = 0,
-    DiamondsSpent = 0,
-    RareCatches = 0,
-    FruitsEaten = 0,
     ChestsBroken = 0,
-    CubesBought = 0,
-    PurchaseRetries = 0,
-    WebhookFailures = 0,
-    HugeCatchAttempts = 0,
+    CubesSpent = 0,
 }
+
+local LAST_SHOP_VISIT = 0
 
 local function getCubeName(forceUltra)
     if forceUltra == true then return "Ultra Pet Cube" end
@@ -358,6 +208,9 @@ local function getCubeCount(forceUltra)
     return count
 end
 
+--------------------------------------------------------------------------------
+-- SECTION 5: Quest Logic & Pet Target Selector (Easiest Goal Pet First)
+--------------------------------------------------------------------------------
 local function getQuestData()
     local data = Save and Save.Get()
     return data and data.NPCQuests and data.NPCQuests[QUEST_ID] or nil
@@ -387,9 +240,7 @@ end
 local function ensureQuestData()
     local quest = getQuestData()
     if quest and quest.Quests and #quest.Quests > 0 then return true end
-    pcall(function()
-        ClientNetwork.Invoke("NPC Quests: Ensure", QUEST_ID)
-    end)
+    pcall(function() ClientNetwork.Invoke("NPC Quests: Ensure", QUEST_ID) end)
     return false
 end
 
@@ -405,16 +256,48 @@ local function getRoamingPetId(entry)
     return nil
 end
 
-local function getCatchDifficulty(entry)
-    local chance = tonumber(entry and entry.Chance)
-    if not chance or chance <= 0 then
-        return 999999
+-- Priority Selector: Selects active quest targets first (easiest catch rate first).
+-- If no quest targets are roaming, falls back to the overall easiest roaming pet.
+local function chooseBestTarget()
+    local data = Save and Save.Get()
+    local roaming = data and data.RoamingPets or {}
+    local questTargets = getRequiredPets()
+
+    local bestGoalIndex, bestGoalPet, bestGoalChance = nil, nil, math.huge
+    local bestAnyIndex, bestAnyPet, bestAnyChance = nil, nil, math.huge
+
+    for index, entry in pairs(roaming) do
+        local petId = getRoamingPetId(entry)
+        local chance = tonumber(entry.Chance) or 999999
+
+        if petId and questTargets[petId] then
+            -- Match found for active quest goal! Pick the easiest one (lowest chance value / highest spawn)
+            if chance < bestGoalChance then
+                bestGoalIndex = index
+                bestGoalPet = petId
+                bestGoalChance = chance
+            end
+        end
+
+        if chance < bestAnyChance then
+            bestAnyIndex = index
+            bestAnyPet = petId
+            bestAnyChance = chance
+        end
     end
-    return chance
+
+    if bestGoalIndex then
+        return bestGoalIndex, bestGoalPet, "QUEST_GOAL"
+    end
+    if bestAnyIndex then
+        return bestAnyIndex, bestAnyPet, "EASIEST_FALLBACK"
+    end
+
+    return nil, nil, nil
 end
 
 --------------------------------------------------------------------------------
--- SECTION 5: BossChest & Huge Detection Engine (Strict Identification)
+-- SECTION 6: Boss Chest & Breakables Detector (Position Based)
 --------------------------------------------------------------------------------
 local BossChestService = {}
 
@@ -426,264 +309,79 @@ function BossChestService:GetBossChest()
     for _, model in ipairs(breakables:GetChildren()) do
         if model:IsA("Model") then
             local pos = model:GetPivot().Position
-            local dist = (pos - BOSS_CHEST_SPAWN_POS).Magnitude
-            if dist < 25 then
-                local modelName = string.lower(model.Name)
-                local isBossType = string.find(modelName, "boss", 1, true)
-                    or string.find(modelName, "chest", 1, true)
-                    or string.find(modelName, "elemental", 1, true)
-                    or model:GetAttribute("IsBoss") == true
-                
-                if isBossType then
-                    return model
-                end
+            -- Match ANY breakable model within 30 studs of the Elemental Boss Chest spawn location
+            if (pos - BOSS_CHEST_SPAWN_POS).Magnitude < 30 then
+                return model
             end
         end
     end
     return nil
 end
 
-local function isRarePet(entry)
-    if not entry or not entry.Pet then return false, nil, nil end
-    local petId = getRoamingPetId(entry)
-    if not petId then return false, nil, nil end
-
-    local lowerName = string.lower(petId)
-    if string.find(lowerName, "huge", 1, true) then
-        return true, petId, "HUGE"
-    end
-
-    if PetItem then
-        local ok, item = pcall(function() return PetItem:From(entry.Pet) end)
-        if ok and item and item.IsHuge then
-            local hugeOk, isHuge = pcall(function() return item:IsHuge() end)
-            if hugeOk and isHuge then
-                return true, petId, "HUGE"
-            end
-        end
-    end
-
-    return false, petId, nil
-end
-
-local function isHugeInventoryPet(petData)
-    if type(petData) ~= "table" then return false, nil end
-    local petId = tostring(petData.id or "")
-    if string.find(string.lower(petId), "huge", 1, true) then
-        return true, petId
-    end
-    if PetItem then
-        local ok, item = pcall(function() return PetItem:From(petData) end)
-        if ok and item and item.IsHuge then
-            local hugeOk, isHuge = pcall(function() return item:IsHuge() end)
-            if hugeOk and isHuge then
-                return true, petId
-            end
-        end
-    end
-    return false, petId
-end
-
-local function snapshotPreChestHuges()
-    local data = Save and Save.Get()
-    local roaming = data and data.RoamingPets or {}
-    local snapshot = {}
-    for index, entry in pairs(roaming) do
-        local isRare, rareName = isRarePet(entry)
-        if isRare then
-            snapshot[index] = rareName
-        end
-    end
-    return snapshot
-end
-
-local function findRarePetOnly(preChestSnapshot)
-    local data = Save and Save.Get()
-    local roaming = data and data.RoamingPets or {}
-
-    for index, entry in pairs(roaming) do
-        local isRare, rareName, rareType = isRarePet(entry)
-        if isRare then
-            if not preChestSnapshot or not preChestSnapshot[index] then
-                return index, rareName, true, rareType
-            end
-        end
-    end
-    return nil, nil, false, nil
-end
-
 --------------------------------------------------------------------------------
--- SECTION 6: ServerHop & Teleport Manager
+-- SECTION 7: Server Hopping & Teleport Loader
 --------------------------------------------------------------------------------
 local SESSION_ENV = (getgenv and getgenv()) or _G
 local QUEUE_ON_TELEPORT = queue_on_teleport or queueonteleport or (syn and syn.queue_on_teleport)
-
-local SERVER_HISTORY = {}
-if SESSION_ENV and type(SESSION_ENV.EQR_SERVER_HISTORY) == "table" then
-    for _, sId in ipairs(SESSION_ENV.EQR_SERVER_HISTORY) do
-        if type(sId) == "string" and sId ~= "" then
-            table.insert(SERVER_HISTORY, sId)
-        end
-    end
-end
-
-local function syncServerHistorySession()
-    while #SERVER_HISTORY > 20 do table.remove(SERVER_HISTORY, 1) end
-    if SESSION_ENV then
-        local copy = {}
-        for idx, id in ipairs(SERVER_HISTORY) do copy[idx] = id end
-        SESSION_ENV.EQR_SERVER_HISTORY = copy
-    end
-end
-
-local function isRecentServer(serverId)
-    if not serverId then return false end
-    for _, recentId in ipairs(SERVER_HISTORY) do
-        if recentId == serverId then return true end
-    end
-    return false
-end
-
-local function rememberServerId(serverId)
-    if type(serverId) ~= "string" or serverId == "" then return end
-    for idx = #SERVER_HISTORY, 1, -1 do
-        if SERVER_HISTORY[idx] == serverId then table.remove(SERVER_HISTORY, idx) end
-    end
-    table.insert(SERVER_HISTORY, serverId)
-    syncServerHistorySession()
-end
-
-rememberServerId(game.JobId)
-
 local IS_HOPPING = false
 
 local function setupTeleportContinuation()
     EQR_RUNTIME:AddConnection(player.OnTeleport:Connect(function(teleportState)
-        local stateName = tostring(teleportState)
-        if string.find(stateName, "Failed", 1, true) then
-            IS_HOPPING = false
-            return
-        end
-
         if not QUEUE_ON_TELEPORT or not CONFIG.RUNNING then return end
-
-        syncServerHistorySession()
         local modeLit = HttpService:JSONEncode(CONFIG.MODE)
-        local histJson = HttpService:JSONEncode(SERVER_HISTORY)
-        local histLit = HttpService:JSONEncode(histJson)
         local urlLit = HttpService:JSONEncode(SCRIPT_URL)
-
         local scriptText = table.concat({
             "local sessionEnv = (getgenv and getgenv()) or _G",
             "sessionEnv.EQR_SESSION_MODE = " .. modeLit,
-            "sessionEnv.EQR_SERVER_HISTORY = game:GetService(\"HttpService\"):JSONDecode(" .. histLit .. ")",
-            "sessionEnv.EQR_RESUMED_FROM_TELEPORT = true",
             "task.wait(2)",
             "local url = " .. urlLit,
-            "local source = nil",
-            "for attempt = 1, 5 do",
-            "    local ok, res = pcall(function() return game:HttpGet(url) end)",
-            "    if ok and res and res ~= '' then source = res; break end",
-            "    task.wait(attempt * 1.5)",
-            "end",
-            "if not source then warn('[EQR Loader] Teleport fetch failed'); return end",
-            "local chunk, err = loadstring(source)",
-            "if not chunk then warn('[EQR Loader] Compile error: ' .. tostring(err)); return end",
-            "pcall(chunk)"
+            "local ok, source = pcall(function() return game:HttpGet(url) end)",
+            "if ok and source then pcall(loadstring(source)) end"
         }, "\n")
-
         QUEUE_ON_TELEPORT(scriptText)
     end))
 end
-
 setupTeleportContinuation()
 
 local function serverHop()
     if IS_HOPPING then return false end
     IS_HOPPING = true
-
-    print("[EQR] Scanning for fresh server...")
-    WebhookService:Push("Server Hopping", "Scanning for unvisited servers.", WEBHOOK_COLORS.BLUE)
+    WebhookService:Push("Server Hopping", "Hopping to fresh server...", WEBHOOK_COLORS.BLUE)
 
     local placeId = game.PlaceId
     local currentJobId = game.JobId
-    local freshServerIds = {}
 
-    local function fetchServerPage(cursor)
-        local url = string.format("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100", placeId)
-        if cursor then url = url .. "&cursor=" .. HttpService:UrlEncode(cursor) end
-        local ok, body = pcall(function() return game:HttpGet(url) end)
-        if ok and body then
-            local decodeOk, decoded = pcall(function() return HttpService:JSONDecode(body) end)
-            return decodeOk and decoded or nil
-        end
-        return nil
-    end
-
-    local cursor = nil
-    local pages = 0
-    repeat
-        local page = fetchServerPage(cursor)
-        if not page then break end
-        pages = pages + 1
-
-        for _, server in ipairs(page.data or {}) do
-            local sId = server.id
-            local playing = tonumber(server.playing) or 0
-            local maxP = tonumber(server.maxPlayers) or 0
-            if sId and sId ~= currentJobId and playing < maxP then
-                if not isRecentServer(sId) then
-                    table.insert(freshServerIds, sId)
-                end
+    pcall(function()
+        local body = game:HttpGet(string.format("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100", placeId))
+        local decoded = HttpService:JSONDecode(body)
+        local fresh = {}
+        for _, s in ipairs(decoded.data or {}) do
+            if s.id ~= currentJobId and (s.playing or 0) < (s.maxPlayers or 0) then
+                table.insert(fresh, s.id)
             end
         end
-        cursor = page.nextPageCursor
-    until #freshServerIds > 0 or not cursor or pages >= 5
-
-    if #freshServerIds == 0 then
-        warn("[EQR] No unvisited servers found. Retrying shortly.")
-        IS_HOPPING = false
-        return false
-    end
-
-    local selected = freshServerIds[math.random(1, #freshServerIds)]
-    rememberServerId(selected)
-
-    local ok, err = pcall(function()
-        TeleportService:TeleportToPlaceInstance(placeId, selected, player)
+        if #fresh > 0 then
+            TeleportService:TeleportToPlaceInstance(placeId, fresh[math.random(1, #fresh)], player)
+        end
     end)
-
-    if not ok then
-        warn("[EQR] Teleport failed: " .. tostring(err))
-        IS_HOPPING = false
-        return false
-    end
-
-    return true
+    task.wait(3)
+    IS_HOPPING = false
 end
 
 --------------------------------------------------------------------------------
--- SECTION 7: Authoritative State Machine Engine
+-- SECTION 8: State Machine & Execution Loop
 --------------------------------------------------------------------------------
-local StateMachine = {
-    CurrentState = "IDLE",
-    StateDetail = "Initializing",
-    RunId = EQR_RUNTIME.RunId,
-    UIListeners = {}
-}
+local StateMachine = { CurrentState = "IDLE", StateDetail = "Ready", UIListeners = {} }
 
 function StateMachine:SetState(state, detail)
     self.CurrentState = state or "IDLE"
     self.StateDetail = detail or ""
-    print(string.format("[EQR State] %s: %s", self.CurrentState, self.StateDetail))
-    for _, fn in ipairs(self.UIListeners) do
-        pcall(fn, self.CurrentState, self.StateDetail)
-    end
+    for _, fn in ipairs(self.UIListeners) do pcall(fn, self.CurrentState, self.StateDetail) end
 end
 
 local function getRootPart()
-    local character = player.Character or player.CharacterAdded:Wait()
-    return character and character:FindFirstChild("HumanoidRootPart")
+    local char = player.Character or player.CharacterAdded:Wait()
+    return char and char:FindFirstChild("HumanoidRootPart")
 end
 
 local function movePlayer(targetCFrame, statusText)
@@ -691,96 +389,56 @@ local function movePlayer(targetCFrame, statusText)
     if not root or not targetCFrame then return false end
     if statusText then StateMachine:SetState("TRAVEL", statusText) end
     root.CFrame = targetCFrame
-    task.wait(0.5)
-    return (root.Position - targetCFrame.Position).Magnitude < 10
-end
-
-local function goToElementalRealm()
-    local isThere = false
-    pcall(function()
-        isThere = MapCmds and MapCmds.GetCurrentZone and MapCmds.GetCurrentZone() == "Elemental Realm"
-    end)
-    if isThere then return true end
-
-    StateMachine:SetState("TRAVEL", "Teleporting to Elemental Realm")
-    pcall(function()
-        if MapCmds and MapCmds.Teleport then MapCmds.Teleport("Elemental Realm") end
-    end)
-    task.wait(1.5)
+    task.wait(0.4)
     return true
 end
 
-local function buyAvailableCubeStock()
-    if not CONFIG.AUTO_RESTOCK then return 0 end
-    local verified = 0
-    local slots = {1, 2, 3}
-
-    for _, slot in ipairs(slots) do
-        if not CONFIG.AUTO_RESTOCK or not CONFIG.RUNNING then break end
-        local invokeOk, _ = pcall(function()
-            return ClientNetwork.Invoke("Merchant_RequestPurchase", PET_CUBE_STORE_ID, slot)
-        end)
-        if invokeOk then
-            verified = verified + 1
-            STATS.CubesBought = STATS.CubesBought + 1
-        end
-        task.wait(0.2)
-    end
-    return verified
-end
-
-local function visitShopAndBuy()
+local function visitShopIfNeeded()
     if not CONFIG.AUTO_RESTOCK then return false end
-    StateMachine:SetState("SHOP", "Visiting Pet Cube Shop")
-    if movePlayer(SHOP_CFRAME, "Moving to Shop") then
-        task.wait(0.5)
-        buyAvailableCubeStock()
-        movePlayer(FARM_ZONE_CFRAME, "Returning to Farm Zone")
+    local cubesLeft = getCubeCount()
+    local now = os.clock()
+
+    -- Only visit shop if cubes are low (<15) OR if shop interval (45s) has passed
+    if cubesLeft >= 15 and (now - LAST_SHOP_VISIT) < CONFIG.SHOP_INTERVAL then
+        return false
+    end
+
+    LAST_SHOP_VISIT = now
+    StateMachine:SetState("SHOP", "Buying Pet Cubes")
+    if movePlayer(SHOP_CFRAME, "Teleporting to Shop") then
+        task.wait(0.4)
+        for _, slot in ipairs({1, 2, 3}) do
+            pcall(function() ClientNetwork.Invoke("Merchant_RequestPurchase", PET_CUBE_STORE_ID, slot) end)
+            task.wait(0.15)
+        end
+        movePlayer(FARM_ZONE_CFRAME, "Returning to Realm")
         return true
     end
     return false
 end
 
-local function breakBossChest(bossChest)
-    if not bossChest or not bossChest.Parent then return false end
+local function breakBossChest(chestModel)
+    if not chestModel or not chestModel.Parent then return false end
     local net = ReplicatedStorage:FindFirstChild("Network")
     local damageRemote = net and net:FindFirstChild("Breakables_PlayerDealDamage")
     if not damageRemote then return false end
 
-    movePlayer(BOSS_CHEST_CFRAME, "Approaching Boss Chest")
-    StateMachine:SetState("CHEST_BREAK", "Attacking Boss Chest")
+    movePlayer(BOSS_CHEST_CFRAME, "Breaking Boss Chest")
+    StateMachine:SetState("CHEST", "Breaking Boss Chest")
 
-    local started = os.clock()
-    while os.clock() - started < 30 and bossChest.Parent and CONFIG.RUNNING do
+    local start = os.clock()
+    while os.clock() - start < 25 and chestModel.Parent and CONFIG.RUNNING do
         local root = getRootPart()
         if root then root.CFrame = BOSS_CHEST_CFRAME end
-
-        damageRemote:FireServer(bossChest.Name)
-        task.wait(0.2)
+        damageRemote:FireServer(chestModel.Name)
+        task.wait(0.15)
     end
 
-    if not bossChest.Parent then
+    if not chestModel.Parent then
         STATS.ChestsBroken = STATS.ChestsBroken + 1
-        movePlayer(BOSS_CHEST_LOOT_CFRAME, "Collecting Loot")
         return true
     end
-
     return false
-end
-
-local function waitForHuge(seconds, preChestSnapshot)
-    local deadline = os.clock() + (seconds or 8)
-    StateMachine:SetState("HUGE_WAIT", "Scanning for post-chest Huge spawn")
-
-    repeat
-        local index, petId, isRareTarget, rareType = findRarePetOnly(preChestSnapshot)
-        if index and isRareTarget then
-            return index, petId, isRareTarget, rareType
-        end
-        task.wait(0.2)
-    until os.clock() >= deadline or not CONFIG.RUNNING
-
-    return nil, nil, false, nil
 end
 
 local function executeMainLoop()
@@ -794,38 +452,22 @@ local function executeMainLoop()
                 continue
             end
 
-            goToElementalRealm()
+            -- 1. Check & break Boss Chest if spawned
+            local bossChest = CONFIG.AUTO_BREAK and BossChestService:GetBossChest()
+            if bossChest then
+                breakBossChest(bossChest)
+            end
+
+            -- 2. Check shop restock (throttled to 45s or low cubes)
+            visitShopIfNeeded()
 
             if CONFIG.MODE == "HUGE" then
-                visitShopAndBuy()
-                local bossChest = BossChestService:GetBossChest()
-                if bossChest then
-                    local preSnapshot = snapshotPreChestHuges()
-                    if breakBossChest(bossChest) then
-                        local hIdx, hId, hRare, hType = waitForHuge(8, preSnapshot)
-                        if hIdx then
-                            StateMachine:SetState("HUGE_CATCH", "Attempting Huge Catch: " .. tostring(hId))
-                            pcall(function()
-                                ClientNetwork.Invoke("RoamingPets_CatchPet", "Ultra Pet Cube", hIdx)
-                            end)
-                            STATS.PetsCaught = STATS.PetsCaught + 1
-                            WebhookService:Push("HUGE CAUGHT!", "Caught **" .. tostring(hId) .. "**!", WEBHOOK_COLORS.GOLD, {}, true)
-                        end
-                    end
-                end
                 serverHop()
                 task.wait(3)
             else
                 -- QUEST MODE
-                if CONFIG.AUTO_RESTOCK then visitShopAndBuy() end
-                
-                local bossChest = CONFIG.AUTO_BREAK and BossChestService:GetBossChest()
-                if bossChest then
-                    breakBossChest(bossChest)
-                end
-
                 if questComplete() then
-                    StateMachine:SetState("QUEST_CLAIM", "Redeeming completed quest")
+                    StateMachine:SetState("CLAIM", "Redeeming Quest")
                     pcall(function() ClientNetwork.Invoke("NPC Quests: Redeem", QUEST_ID) end)
                     STATS.QuestsCompleted = STATS.QuestsCompleted + 1
                     task.wait(1.5)
@@ -834,45 +476,33 @@ local function executeMainLoop()
 
                 ensureQuestData()
 
-                local roaming = Save and Save.Get() and Save.Get().RoamingPets or {}
-                local targetIndex, targetPetId = nil, nil
-                local bestDiff = 999999
-
-                for idx, entry in pairs(roaming) do
-                    local diff = getCatchDifficulty(entry)
-                    if diff < bestDiff then
-                        bestDiff = diff
-                        targetIndex = idx
-                        targetPetId = getRoamingPetId(entry)
-                    end
-                end
-
-                if targetIndex then
-                    StateMachine:SetState("CATCHING", "Catching " .. tostring(targetPetId))
+                local tIndex, tPet, tReason = chooseBestTarget()
+                if tIndex then
+                    StateMachine:SetState("CATCHING", "Catching " .. tostring(tPet))
                     local cubeType = CONFIG.USE_ULTRA and "Ultra Pet Cube" or "Pet Cube"
                     local ok, _ = pcall(function()
-                        return ClientNetwork.Invoke("RoamingPets_CatchPet", cubeType, targetIndex)
+                        return ClientNetwork.Invoke("RoamingPets_CatchPet", cubeType, tIndex)
                     end)
                     if ok then
                         STATS.PetsCaught = STATS.PetsCaught + 1
                         STATS.CubesSpent = STATS.CubesSpent + 1
                     end
                 else
-                    StateMachine:SetState("QUEST_SCAN", "Waiting for roaming targets")
+                    StateMachine:SetState("SCANNING", "Waiting for Pets")
                 end
 
-                task.wait(2.5)
+                task.wait(1.8)
             end
         end
     end)
 end
 
 --------------------------------------------------------------------------------
--- SECTION 8: UI Engine (Modern Dashboard & Responsive Interface)
+-- SECTION 9: Sleek Compact Dashboard UI (Modern 320x240 Design)
 --------------------------------------------------------------------------------
 local function buildUI()
-    local oldGui = playerGui:FindFirstChild("EQR_Pro")
-    if oldGui then oldGui:Destroy() end
+    local old = playerGui:FindFirstChild("EQR_Pro")
+    if old then old:Destroy() end
 
     local gui = Instance.new("ScreenGui")
     gui.Name = "EQR_Pro"
@@ -880,214 +510,214 @@ local function buildUI()
     gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     gui.Parent = playerGui
 
-    local panel = Instance.new("Frame")
-    panel.Name = "Main"
-    panel.Size = UDim2.fromOffset(560, 480)
-    panel.Position = UDim2.new(0.5, -280, 0.5, -240)
-    panel.BackgroundColor3 = Color3.fromRGB(15, 17, 26)
-    panel.BorderSizePixel = 0
-    panel.Active = true
-    panel.ClipsDescendants = true
-    panel.Parent = gui
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Name = "MainFrame"
+    mainFrame.Size = UDim2.fromOffset(330, 245)
+    mainFrame.Position = UDim2.new(0.5, -165, 0.5, -122)
+    mainFrame.BackgroundColor3 = Color3.fromRGB(15, 17, 26)
+    mainFrame.BorderSizePixel = 0
+    mainFrame.Active = true
+    mainFrame.Parent = gui
 
     local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 12)
-    corner.Parent = panel
+    corner.CornerRadius = UDim.new(0, 10)
+    corner.Parent = mainFrame
 
     local stroke = Instance.new("UIStroke")
     stroke.Color = Color3.fromRGB(88, 101, 242)
     stroke.Thickness = 1.2
-    stroke.Parent = panel
+    stroke.Transparency = 0.2
+    stroke.Parent = mainFrame
 
-    -- Title Bar & Drag Controller
-    local titleBar = Instance.new("Frame")
-    titleBar.Size = UDim2.new(1, 0, 0, 40)
-    titleBar.BackgroundColor3 = Color3.fromRGB(24, 27, 42)
-    titleBar.BorderSizePixel = 0
-    titleBar.Parent = panel
+    -- Header / Title Drag Bar
+    local header = Instance.new("Frame")
+    header.Size = UDim2.new(1, 0, 0, 36)
+    header.BackgroundColor3 = Color3.fromRGB(23, 26, 40)
+    header.BorderSizePixel = 0
+    header.Parent = mainFrame
 
-    local dragging, dragInput, dragStart, startPos
-    EQR_RUNTIME:AddConnection(titleBar.InputBegan:Connect(function(input)
+    local headerCorner = Instance.new("UICorner")
+    headerCorner.CornerRadius = UDim.new(0, 10)
+    headerCorner.Parent = header
+
+    local dragging, dragStart, startPos
+    EQR_RUNTIME:AddConnection(header.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            dragStart = input.Position
-            startPos = panel.Position
-            input.Changed:Connect(function()
-                if input.UserInputState == Enum.UserInputState.End then
-                    dragging = false
-                end
-            end)
+            dragging = true; dragStart = input.Position; startPos = mainFrame.Position
         end
     end))
-
-    EQR_RUNTIME:AddConnection(titleBar.InputChanged:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-            dragInput = input
-        end
-    end))
-
     EQR_RUNTIME:AddConnection(UserInputService.InputChanged:Connect(function(input)
-        if input == dragInput and dragging then
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
             local delta = input.Position - dragStart
-            panel.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+            mainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end))
+    EQR_RUNTIME:AddConnection(UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
         end
     end))
 
-    local titleLabel = Instance.new("TextLabel")
-    titleLabel.Size = UDim2.new(0, 250, 1, 0)
-    titleLabel.Position = UDim2.fromOffset(14, 0)
-    titleLabel.BackgroundTransparency = 1
-    titleLabel.Text = "Quest Runner " .. EQR_RUNTIME.Version
-    titleLabel.TextColor3 = Color3.fromRGB(240, 243, 255)
-    titleLabel.Font = Enum.Font.GothamBold
-    titleLabel.TextSize = 14
-    titleLabel.TextXAlignment = Enum.TextXAlignment.Left
-    titleLabel.Parent = titleBar
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(0, 140, 1, 0)
+    title.Position = UDim2.fromOffset(12, 0)
+    title.BackgroundTransparency = 1
+    title.Text = "⚡ Quest Runner v3.1"
+    title.TextColor3 = Color3.fromRGB(240, 243, 255)
+    title.Font = Enum.Font.GothamBold
+    title.TextSize = 13
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Parent = header
 
     local statusPill = Instance.new("TextLabel")
-    statusPill.Size = UDim2.new(0, 180, 0, 24)
-    statusPill.Position = UDim2.new(1, -260, 0.5, -12)
-    statusPill.BackgroundColor3 = Color3.fromRGB(35, 39, 62)
+    statusPill.Size = UDim2.new(0, 110, 0, 22)
+    statusPill.Position = UDim2.new(1, -145, 0.5, -11)
+    statusPill.BackgroundColor3 = Color3.fromRGB(34, 38, 58)
     statusPill.Text = "IDLE • Ready"
     statusPill.TextColor3 = Color3.fromRGB(160, 225, 180)
     statusPill.Font = Enum.Font.GothamMedium
-    statusPill.TextSize = 11
-    statusPill.Parent = titleBar
-
-    local pillCorner = Instance.new("UICorner")
-    pillCorner.CornerRadius = UDim.new(0, 6)
-    pillCorner.Parent = statusPill
+    statusPill.TextSize = 10
+    statusPill.Parent = header
+    local pillC = Instance.new("UICorner"); pillC.CornerRadius = UDim.new(0, 6); pillC.Parent = statusPill
 
     local closeBtn = Instance.new("TextButton")
-    closeBtn.Size = UDim2.fromOffset(26, 24)
-    closeBtn.Position = UDim2.new(1, -34, 0.5, -12)
-    closeBtn.BackgroundColor3 = Color3.fromRGB(195, 60, 60)
+    closeBtn.Size = UDim2.fromOffset(22, 22)
+    closeBtn.Position = UDim2.new(1, -28, 0.5, -11)
+    closeBtn.BackgroundColor3 = Color3.fromRGB(200, 60, 60)
     closeBtn.Text = "✕"
     closeBtn.TextColor3 = Color3.new(1, 1, 1)
     closeBtn.Font = Enum.Font.GothamBold
-    closeBtn.TextSize = 12
-    closeBtn.Parent = titleBar
-
-    local closeCorner = Instance.new("UICorner")
-    closeCorner.CornerRadius = UDim.new(0, 4)
-    closeCorner.Parent = closeBtn
-
+    closeBtn.TextSize = 11
+    closeBtn.Parent = header
+    local closeC = Instance.new("UICorner"); closeC.CornerRadius = UDim.new(0, 4); closeC.Parent = closeBtn
     closeBtn.MouseButton1Click:Connect(function()
         CONFIG.RUNNING = false
         saveConfig()
         gui:Destroy()
     end)
 
-    -- Content Dashboard Body
-    local body = Instance.new("Frame")
-    body.Size = UDim2.new(1, -20, 1, -60)
-    body.Position = UDim2.fromOffset(10, 50)
-    body.BackgroundTransparency = 1
-    body.Parent = panel
-
+    -- Controls Row
     local startBtn = Instance.new("TextButton")
-    startBtn.Size = UDim2.new(0.48, 0, 0, 40)
-    startBtn.Position = UDim2.fromOffset(0, 10)
+    startBtn.Size = UDim2.new(0.47, 0, 0, 32)
+    startBtn.Position = UDim2.fromOffset(12, 46)
     startBtn.BackgroundColor3 = Color3.fromRGB(46, 160, 90)
-    startBtn.Text = "START RUNNER"
+    startBtn.Text = "▶ START RUNNER"
     startBtn.TextColor3 = Color3.new(1, 1, 1)
     startBtn.Font = Enum.Font.GothamBold
-    startBtn.TextSize = 13
-    startBtn.Parent = body
-
-    local startCorner = Instance.new("UICorner")
-    startCorner.CornerRadius = UDim.new(0, 8)
-    startCorner.Parent = startBtn
+    startBtn.TextSize = 11
+    startBtn.Parent = mainFrame
+    local startC = Instance.new("UICorner"); startC.CornerRadius = UDim.new(0, 6); startC.Parent = startBtn
 
     startBtn.MouseButton1Click:Connect(function()
         CONFIG.RUNNING = not CONFIG.RUNNING
-        startBtn.Text = CONFIG.RUNNING and "PAUSE RUNNER" or "START RUNNER"
+        startBtn.Text = CONFIG.RUNNING and "⏸ PAUSE RUNNER" or "▶ START RUNNER"
         startBtn.BackgroundColor3 = CONFIG.RUNNING and Color3.fromRGB(190, 70, 60) or Color3.fromRGB(46, 160, 90)
         saveConfig()
     end)
 
     local modeBtn = Instance.new("TextButton")
-    modeBtn.Size = UDim2.new(0.48, 0, 0, 40)
-    modeBtn.Position = UDim2.new(0.52, 0, 0, 10)
+    modeBtn.Size = UDim2.new(0.47, 0, 0, 32)
+    modeBtn.Position = UDim2.new(0.53, 0, 0, 46)
     modeBtn.BackgroundColor3 = Color3.fromRGB(88, 101, 242)
-    modeBtn.Text = "MODE: " .. CONFIG.MODE
+    modeBtn.Text = "🎯 MODE: " .. CONFIG.MODE
     modeBtn.TextColor3 = Color3.new(1, 1, 1)
     modeBtn.Font = Enum.Font.GothamBold
-    modeBtn.TextSize = 13
-    modeBtn.Parent = body
-
-    local modeCorner = Instance.new("UICorner")
-    modeCorner.CornerRadius = UDim.new(0, 8)
-    modeCorner.Parent = modeBtn
+    modeBtn.TextSize = 11
+    modeBtn.Parent = mainFrame
+    local modeC = Instance.new("UICorner"); modeC.CornerRadius = UDim.new(0, 6); modeC.Parent = modeBtn
 
     modeBtn.MouseButton1Click:Connect(function()
         CONFIG.MODE = CONFIG.MODE == "QUEST" and "HUGE" or "QUEST"
-        modeBtn.Text = "MODE: " .. CONFIG.MODE
+        modeBtn.Text = "🎯 MODE: " .. CONFIG.MODE
         saveConfig()
     end)
 
-    -- Stats Log Display
-    local statsCard = Instance.new("Frame")
-    statsCard.Size = UDim2.new(1, 0, 0, 360)
-    statsCard.Position = UDim2.fromOffset(0, 60)
-    statsCard.BackgroundColor3 = Color3.fromRGB(20, 23, 36)
-    statsCard.Parent = body
+    -- Option Toggles Row
+    local breakToggle = Instance.new("TextButton")
+    breakToggle.Size = UDim2.new(0.47, 0, 0, 24)
+    breakToggle.Position = UDim2.fromOffset(12, 84)
+    breakToggle.BackgroundColor3 = CONFIG.AUTO_BREAK and Color3.fromRGB(40, 50, 75) or Color3.fromRGB(25, 28, 40)
+    breakToggle.Text = "Chest Break: " .. (CONFIG.AUTO_BREAK and "ON" or "OFF")
+    breakToggle.TextColor3 = CONFIG.AUTO_BREAK and Color3.fromRGB(160, 220, 255) or Color3.fromRGB(150, 155, 170)
+    breakToggle.Font = Enum.Font.GothamMedium
+    breakToggle.TextSize = 10
+    breakToggle.Parent = mainFrame
+    local btC = Instance.new("UICorner"); btC.CornerRadius = UDim.new(0, 5); btC.Parent = breakToggle
 
-    local cardCorner = Instance.new("UICorner")
-    cardCorner.CornerRadius = UDim.new(0, 8)
-    cardCorner.Parent = statsCard
+    breakToggle.MouseButton1Click:Connect(function()
+        CONFIG.AUTO_BREAK = not CONFIG.AUTO_BREAK
+        breakToggle.Text = "Chest Break: " .. (CONFIG.AUTO_BREAK and "ON" or "OFF")
+        breakToggle.BackgroundColor3 = CONFIG.AUTO_BREAK and Color3.fromRGB(40, 50, 75) or Color3.fromRGB(25, 28, 40)
+        breakToggle.TextColor3 = CONFIG.AUTO_BREAK and Color3.fromRGB(160, 220, 255) or Color3.fromRGB(150, 155, 170)
+        saveConfig()
+    end)
+
+    local shopToggle = Instance.new("TextButton")
+    shopToggle.Size = UDim2.new(0.47, 0, 0, 24)
+    shopToggle.Position = UDim2.new(0.53, 0, 0, 84)
+    shopToggle.BackgroundColor3 = CONFIG.AUTO_RESTOCK and Color3.fromRGB(40, 50, 75) or Color3.fromRGB(25, 28, 40)
+    shopToggle.Text = "Auto Restock: " .. (CONFIG.AUTO_RESTOCK and "ON" or "OFF")
+    shopToggle.TextColor3 = CONFIG.AUTO_RESTOCK and Color3.fromRGB(160, 220, 255) or Color3.fromRGB(150, 155, 170)
+    shopToggle.Font = Enum.Font.GothamMedium
+    shopToggle.TextSize = 10
+    shopToggle.Parent = mainFrame
+    local stC = Instance.new("UICorner"); stC.CornerRadius = UDim.new(0, 5); stC.Parent = shopToggle
+
+    shopToggle.MouseButton1Click:Connect(function()
+        CONFIG.AUTO_RESTOCK = not CONFIG.AUTO_RESTOCK
+        shopToggle.Text = "Auto Restock: " .. (CONFIG.AUTO_RESTOCK and "ON" or "OFF")
+        shopToggle.BackgroundColor3 = CONFIG.AUTO_RESTOCK and Color3.fromRGB(40, 50, 75) or Color3.fromRGB(25, 28, 40)
+        shopToggle.TextColor3 = CONFIG.AUTO_RESTOCK and Color3.fromRGB(160, 220, 255) or Color3.fromRGB(150, 155, 170)
+        saveConfig()
+    end)
+
+    -- Stats Display Panel
+    local statsGrid = Instance.new("Frame")
+    statsGrid.Size = UDim2.new(1, -24, 0, 120)
+    statsGrid.Position = UDim2.fromOffset(12, 114)
+    statsGrid.BackgroundColor3 = Color3.fromRGB(20, 23, 34)
+    statsGrid.Parent = mainFrame
+    local sgC = Instance.new("UICorner"); sgC.CornerRadius = UDim.new(0, 8); sgC.Parent = statsGrid
 
     local statsLabel = Instance.new("TextLabel")
-    statsLabel.Size = UDim2.new(1, -20, 1, -20)
-    statsLabel.Position = UDim2.fromOffset(10, 10)
+    statsLabel.Size = UDim2.new(1, -16, 1, -12)
+    statsLabel.Position = UDim2.fromOffset(8, 6)
     statsLabel.BackgroundTransparency = 1
-    statsLabel.Text = "Initializing UI..."
-    statsLabel.TextColor3 = Color3.fromRGB(200, 210, 235)
+    statsLabel.Text = "Initializing stats..."
+    statsLabel.TextColor3 = Color3.fromRGB(200, 212, 238)
     statsLabel.Font = Enum.Font.Code
-    statsLabel.TextSize = 12
+    statsLabel.TextSize = 11
     statsLabel.TextXAlignment = Enum.TextXAlignment.Left
     statsLabel.TextYAlignment = Enum.TextYAlignment.Top
-    statsLabel.Parent = statsCard
+    statsLabel.Parent = statsGrid
 
     table.insert(StateMachine.UIListeners, function(state, detail)
-        statusPill.Text = string.upper(state) .. " • " .. string.sub(detail, 1, 18)
+        statusPill.Text = string.upper(state) .. " • " .. string.sub(detail, 1, 14)
+        local elapsed = os.time() - STATS.StartTime
         statsLabel.Text = string.format(
-            "================ SESSION DASHBOARD ================\n" ..
-            "State: %s (%s)\n" ..
-            "Runtime: %02d:%02d:%02d\n\n" ..
-            "Quests Completed: %d\n" ..
-            "Pets Caught:      %d\n" ..
-            "Chests Broken:    %d\n" ..
-            "Cubes Spent:      %d\n" ..
-            "Normal Cubes:     %d\n" ..
-            "Ultra Cubes:      %d\n" ..
-            "Servers History:  %d/20\n" ..
-            "==================================================",
-            state, detail,
-            math.floor((os.time() - STATS.StartTime)/3600),
-            math.floor(((os.time() - STATS.StartTime)%3600)/60),
-            (os.time() - STATS.StartTime)%60,
+            "Runtime:      %02d:%02d:%02d\n" ..
+            "Quests Done:  %d\n" ..
+            "Pets Caught:  %d\n" ..
+            "Chests Broke: %d\n" ..
+            "Cubes Left:   %d %s\n" ..
+            "Priority:     Easiest Quest Target First",
+            math.floor(elapsed / 3600), math.floor((elapsed % 3600) / 60), elapsed % 60,
             STATS.QuestsCompleted,
             STATS.PetsCaught,
             STATS.ChestsBroken,
-            STATS.CubesSpent,
-            getCubeCount(false),
-            getCubeCount(true),
-            #SERVER_HISTORY
+            getCubeCount(), getCubeName()
         )
     end)
 end
 
 --------------------------------------------------------------------------------
--- SECTION 9: Main Execution Entrypoint
+-- SECTION 10: Entrypoint
 --------------------------------------------------------------------------------
 local function main()
     buildUI()
     executeMainLoop()
-    print("[EQR " .. EQR_RUNTIME.Version .. "] Architecture Refactor loaded cleanly.")
+    print("[EQR v3.1.0] Sleek Compact Runner loaded cleanly.")
 end
 
 local ok, err = xpcall(main, debug.traceback)
-if not ok then
-    warn("[EQR Critical Fatal Error]: " .. tostring(err))
-end
+if not ok then warn("[EQR Fatal]: " .. tostring(err)) end
